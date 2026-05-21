@@ -1,18 +1,4 @@
-import numpy as np
-from PyQt5 import QtWidgets, QtCore, QtGui
-import pyqtgraph.opengl as gl
-
-GRID_W = 14
-GRID_H = 10
-
-EXIT_CELL = (0, GRID_H // 2)
-INBOUND_CELL = (1, 1)
-INBOUND_PICK_CELL = (2, 1)
-UAV_HOME = (GRID_W // 2, GRID_H // 2, 4.5)
-
-TICK_MS = 35
-SHELF_CAPACITY = 3
-AGENT_SPEED = 0.10
+from PyQt5 import QtGui
 
 PRODUCTS = ["metal", "plastic", "electronics", "wood", "glass"]
 
@@ -32,33 +18,24 @@ PRODUCT_QCOLORS = {
     "glass": QtGui.QColor(51, 230, 230),
 }
 
+SHELF_CAPACITY = 5
+AGENT_SPEED = 0.25
+TICK_MS = 50
+
+EXIT_CELL = (0, 5)
+INBOUND_CELL = (1, 1)
+INBOUND_PICK_CELL = (2, 1)
+UAV_HOME_POS = (7, 5, 4.5)
+
 ROBOT_CONFIG = [
-    {"product": "metal", "color": (1.0, 0.1, 0.1, 1.0), "home": (13, 1)},
-    {"product": "plastic", "color": (0.1, 0.4, 1.0, 1.0), "home": (13, 2)},
-    {"product": "electronics", "color": (1.0, 0.5, 0.1, 1.0), "home": (13, 3)},
-    {"product": "wood", "color": (0.1, 0.8, 0.3, 1.0), "home": (13, 7)},
-    {"product": "glass", "color": (0.8, 0.2, 0.8, 1.0), "home": (13, 8)},
+    {"product": "metal", "color": (1.0, 0.1, 0.1, 1.0), "home": (14, 1)},
+    {"product": "plastic", "color": (0.1, 0.4, 1.0, 1.0), "home": (14, 3)},
+    {"product": "electronics", "color": (1.0, 0.5, 0.1, 1.0), "home": (14, 5)},
+    {"product": "wood", "color": (0.1, 0.8, 0.3, 1.0), "home": (14, 7)},
+    {"product": "glass", "color": (0.8, 0.2, 0.8, 1.0), "home": (14, 9)},
 ]
 
-SHELF_X = {4, 6, 8, 10, 12}
-AISLE_CELLS = set()
-
-for x in range(GRID_W):
-    for y in range(GRID_H):
-        if x not in SHELF_X:
-            AISLE_CELLS.add((x, y))
-
-AISLE_CELLS.add(EXIT_CELL)
-AISLE_CELLS.add(INBOUND_CELL)
-AISLE_CELLS.add(INBOUND_PICK_CELL)
-
-
-def is_shelf_cell(x, y):
-    return x in SHELF_X and 0 <= y < GRID_H
-
-
-def all_shelves():
-    for x in range(GRID_W):
-        for y in range(GRID_H):
-            if is_shelf_cell(x, y):
-                yield (x, y)
+HOME_CELLS = [(14, 1), (14, 2), (14, 3), (14, 4), (14, 5), (14, 6), (14, 7), (14, 8), (14, 9)]
+SHELF_X = {2, 4, 6, 8, 10, 12}
+GRID_W = 16
+GRID_H = 12

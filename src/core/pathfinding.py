@@ -1,29 +1,29 @@
+"""Pathfinding module - A* algorithm implementation."""
+
 import heapq
-from constants import AISLE_CELLS, EXIT_CELL, SHELF_X
+
+from .grid import AISLE_CELLS, manhattan
 
 
-def manhattan(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
-def shelf_access_cells(shelf):
-    x, y = shelf
-    result = []
-    for nx, ny in [(x - 1, y), (x + 1, y)]:
-        if (nx, ny) in AISLE_CELLS:
-            result.append((nx, ny))
-    return result
-
-
-def shelf_distance_score(shelf):
-    return manhattan(shelf, EXIT_CELL)
-
-
-def astar(start, goal, blocked=None):
+def astar(start: tuple, goal: tuple, blocked: set = None) -> list:
+    """
+    Find shortest path using A* algorithm.
+    
+    Args:
+        start: Starting position (x, y)
+        goal: Goal position (x, y)
+        blocked: Set of blocked positions to avoid
+        
+    Returns:
+        List of positions forming the path, empty list if no path found
+    """
     if blocked is None:
         blocked = set()
 
     if start == goal:
+        return []
+
+    if start not in AISLE_CELLS or goal not in AISLE_CELLS:
         return []
 
     open_heap = []
@@ -55,7 +55,7 @@ def astar(start, goal, blocked=None):
                 continue
 
             ng = g + 1
-            if ng < g_score.get(nxt, 10**9):
+            if ng < g_score.get(nxt, float('inf')):
                 g_score[nxt] = ng
                 came_from[nxt] = current
                 f = ng + manhattan(nxt, goal)

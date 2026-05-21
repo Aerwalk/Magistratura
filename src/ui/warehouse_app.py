@@ -1,23 +1,31 @@
+"""Warehouse application UI."""
+
 import sys
 import random
+
 import numpy as np
 from PyQt5 import QtWidgets, QtCore, QtGui
 import pyqtgraph.opengl as gl
 
-from models import (
+from src.config import (
     GRID_H, TICK_MS, SHELF_CAPACITY, GRID_W,
-    PRODUCTS, EXIT_CELL, INBOUND_CELL, INBOUND_PICK_CELL, UAV_HOME_POS,
-    SHELF_X, is_shelf_cell, shelf_state,
-    PRODUCT_COLORS, PRODUCT_QCOLORS,
-    robots, uav, event_log, uav_scan_queue,
-    count_on_shelves, distinct_products_on_shelves,
-    supply_labeled, supply_unlabeled, request_product,
+    PRODUCTS, EXIT_CELL, INBOUND_CELL, INBOUND_PICK_CELL,
+    PRODUCT_COLORS, PRODUCT_QCOLORS
+)
+from src.core.grid import is_shelf_cell
+from src.core.state import get_state
+from src.entities import robots, uav
+from src.simulation import (
+    supply_labeled, supply_unlabeled, request_product, rebalance_warehouse,
+    check_rebalance_complete, check_stuck_robots,
     update_uav, assign_tasks, move_robots_one_step, advance_robot_phases,
-    log, preload, stock_total
+    log, preload,
 )
 
 
 class Warehouse3D(gl.GLViewWidget):
+    """3D visualization widget for warehouse."""
+    
     def __init__(self):
         super().__init__()
         self.setBackgroundColor((28, 28, 34))
@@ -52,6 +60,7 @@ class Warehouse3D(gl.GLViewWidget):
         self.addItem(self.uav_beam)
 
     def update_scene(self):
+        state = get_state()
         floor_pts = np.array([
             [INBOUND_CELL[0], INBOUND_CELL[1], 0.05],
             [INBOUND_PICK_CELL[0], INBOUND_PICK_CELL[1], 0.05],
@@ -69,7 +78,7 @@ class Warehouse3D(gl.GLViewWidget):
         shelf_sizes = []
         product_to_robot_color = {r.product: r.color for r in robots}
         
-        for (x, y), info in shelf_state.items():
+        for (x, y), info in state.shelf_state.items():
             for level in range(SHELF_CAPACITY):
                 z = 0.18 + level * 0.32
                 if level < info["count"] and info["product"] is not None:
@@ -162,6 +171,8 @@ class Warehouse3D(gl.GLViewWidget):
 
 
 class WarehouseApp(QtWidgets.QMainWindow):
+    """Main warehouse simulation window."""
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Склад: БВС + РТС")
@@ -178,9 +189,23 @@ class WarehouseApp(QtWidgets.QMainWindow):
         right = QtWidgets.QVBoxLayout()
         root.addLayout(right, 2)
 
+        self._setup_controls(right)
+        self._setup_robots_panel(right)
+        self._setup_stats_panel(right)
+        self._setup_map_panel(right)
+        self._setup_log_panel(right)
+
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self.timer.start(TICK_MS)
+
+        self.refresh_all()
+
+    def _setup_controls(self, parent):
+        """Setup control buttons panel."""
         controls = QtWidgets.QGroupBox("Управление")
         controls_layout = QtWidgets.QGridLayout(controls)
-        right.addWidget(controls)
+        parent.addWidget(controls)
 
         self.cb_supply = QtWidgets.QComboBox()
         self.cb_supply.addItems(PRODUCTS)
@@ -198,20 +223,26 @@ class WarehouseApp(QtWidgets.QMainWindow):
         self.sb_request_qty.setRange(1, 1)
         self.sb_request_qty.setValue(1)
 
-        self.cb_request.currentIndexChanged.connect(self.on_request_product_changed)
-        self.refresh_request_products()
+        self.cb_request.currentIndexChanged.connect(self._on_request_product_changed)
+        self._refresh_request_products()
 
         btn_supply = QtWidgets.QPushButton("Поставка с меткой")
-        btn_supply.clicked.connect(self.on_supply_labeled)
+        btn_supply.clicked.connect(self._on_supply_labeled)
 
         btn_unlabeled = QtWidgets.QPushButton("Поставка без метки")
-        btn_unlabeled.clicked.connect(self.on_supply_unlabeled)
+        btn_unlabeled.clicked.connect(self._on_supply_unlabeled)
 
         btn_request = QtWidgets.QPushButton("Запрос товара")
-        btn_request.clicked.connect(self.on_request)
+        btn_request.clicked.connect(self._on_request)
 
         btn_demo = QtWidgets.QPushButton("Демо-заполнение")
-        btn_demo.clicked.connect(self.on_demo_fill)
+        btn_demo.clicked.connect(self._on_demo_fill)
+
+        btn_rebalance = QtWidgets.QPushButton("Ребалансировка")
+        btn_rebalance.clicked.connect(self._on_rebalance)
+
+        btn_check_rebalance = QtWidgets.QPushButton("Проверка ребалансировки")
+        btn_check_rebalance.clicked.connect(self._on_check_rebalance)
 
         controls_layout.addWidget(QtWidgets.QLabel("Товар:"), 0, 0)
         controls_layout.addWidget(self.cb_supply, 0, 1)
@@ -230,10 +261,60 @@ class WarehouseApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(btn_request, 2, 4)
 
         controls_layout.addWidget(btn_demo, 3, 0, 1, 5)
+        controls_layout.addWidget(btn_rebalance, 4, 0, 1, 2)
+        controls_layout.addWidget(btn_check_rebalance, 4, 2, 1, 3)
 
+        btn_export = QtWidgets.QPushButton("Экспорт в Excel")
+        btn_export.clicked.connect(self._on_export_excel)
+        controls_layout.addWidget(btn_export, 5, 0, 1, 5)
+
+    def _setup_robots_panel(self, parent):
+        """Setup robots control panel."""
+        from src.config import AGENT_SPEED
+        
+        robots_group = QtWidgets.QGroupBox("РТС")
+        robots_layout = QtWidgets.QGridLayout(robots_group)
+        parent.addWidget(robots_group)
+        
+        self.robot_buttons = []
+        headers = ["РТС", "Сброс", "Ёмкость", "Скорость"]
+        for col, h in enumerate(headers):
+            h_lbl = QtWidgets.QLabel(f"<b>{h}</b>")
+            robots_layout.addWidget(h_lbl, 0, col)
+        
+        for i, robot in enumerate(robots):
+            row = i + 1
+            lbl = QtWidgets.QLabel(f"РТС-{i} ({robot.product[:3]})")
+            lbl.setStyleSheet(
+                f"color: rgb({int(robot.color[0]*255)}, {int(robot.color[1]*255)}, "
+                f"{int(robot.color[2]*255)}); font-weight: bold;"
+            )
+            robots_layout.addWidget(lbl, row, 0)
+            
+            btn_reset = QtWidgets.QPushButton("Сброс")
+            btn_reset.clicked.connect(lambda checked, r=i: self._on_reset_robot(r))
+            robots_layout.addWidget(btn_reset, row, 1)
+            self.robot_buttons.append(btn_reset)
+            
+            sb_cap = QtWidgets.QSpinBox()
+            sb_cap.setRange(1, 5)
+            sb_cap.setValue(robot.capacity)
+            sb_cap.valueChanged.connect(lambda val, r=i: self._on_robot_capacity_changed(r, val))
+            robots_layout.addWidget(sb_cap, row, 2)
+            
+            sb_speed = QtWidgets.QDoubleSpinBox()
+            sb_speed.setRange(0.05, 1.0)
+            sb_speed.setSingleStep(0.05)
+            sb_speed.setDecimals(2)
+            sb_speed.setValue(robot.speed)
+            sb_speed.valueChanged.connect(lambda val, r=i: self._on_robot_speed_changed(r, val))
+            robots_layout.addWidget(sb_speed, row, 3)
+
+    def _setup_stats_panel(self, parent):
+        """Setup statistics panel."""
         stats_group = QtWidgets.QGroupBox("Статистика")
         stats_layout = QtWidgets.QVBoxLayout(stats_group)
-        right.addWidget(stats_group, 2)
+        parent.addWidget(stats_group, 2)
 
         self.stats_table = QtWidgets.QTableWidget(0, 4)
         self.stats_table.setHorizontalHeaderLabels(["Товар", "Всего", "На полках", "Спрос"])
@@ -241,9 +322,11 @@ class WarehouseApp(QtWidgets.QMainWindow):
         self.stats_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         stats_layout.addWidget(self.stats_table)
 
+    def _setup_map_panel(self, parent):
+        """Setup map panel."""
         map_group = QtWidgets.QGroupBox("Карта полок (клик по клетке)")
         map_layout = QtWidgets.QVBoxLayout(map_group)
-        right.addWidget(map_group, 3)
+        parent.addWidget(map_group, 3)
 
         self.map_table = QtWidgets.QTableWidget(GRID_H, GRID_W)
         self.map_table.horizontalHeader().setStretchLastSection(True)
@@ -251,58 +334,67 @@ class WarehouseApp(QtWidgets.QMainWindow):
         self.map_table.verticalHeader().setStretchLastSection(True)
         self.map_table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.map_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.map_table.cellClicked.connect(self.on_map_click)
+        self.map_table.cellClicked.connect(self._on_map_click)
         map_layout.addWidget(self.map_table)
 
+    def _setup_log_panel(self, parent):
+        """Setup log panel."""
         log_group = QtWidgets.QGroupBox("Лог")
         log_layout = QtWidgets.QVBoxLayout(log_group)
-        right.addWidget(log_group, 2)
+        parent.addWidget(log_group, 2)
 
         self.log_text = QtWidgets.QPlainTextEdit()
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)
 
         self.info_label = QtWidgets.QLabel("Выберите операцию")
-        right.addWidget(self.info_label)
+        parent.addWidget(self.info_label)
 
-        self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.tick)
-        self.timer.start(TICK_MS)
-
-        self.refresh_all()
-
-    def on_demo_fill(self):
+    def _on_demo_fill(self):
+        """Handle demo fill button."""
         for p in PRODUCTS:
             supply_labeled(p, random.randint(2, 4))
         supply_unlabeled(3)
         self.refresh_all()
 
-    def on_supply_labeled(self):
+    def _on_supply_labeled(self):
+        """Handle supply labeled button."""
         supply_labeled(self.cb_supply.currentText(), self.sb_supply_qty.value())
         self.refresh_all()
 
-    def on_supply_unlabeled(self):
+    def _on_supply_unlabeled(self):
+        """Handle supply unlabeled button."""
         supply_unlabeled(self.sb_unlabeled_qty.value())
         self.refresh_all()
 
-    def on_request_product_changed(self):
+    def _on_request_product_changed(self):
+        """Handle request product selection changed."""
         product = self.cb_request.currentText()
         if not product:
-            self.sb_request_qty.setRange(1, 1)
-            self.sb_request_qty.setValue(1)
+            self.sb_request_qty.setRange(0, 0)
+            self.sb_request_qty.setValue(0)
             return
 
-        max_qty = max(1, count_on_shelves(product))
-        self.sb_request_qty.setRange(1, max_qty)
-        if self.sb_request_qty.value() > max_qty:
-            self.sb_request_qty.setValue(max_qty)
+        from src.core.state import count_on_shelves
+        max_qty = count_on_shelves(product)
+        if max_qty <= 0:
+            self.sb_request_qty.setRange(0, 0)
+            self.sb_request_qty.setValue(0)
+        else:
+            self.sb_request_qty.setRange(1, max_qty)
+            if self.sb_request_qty.value() > max_qty:
+                self.sb_request_qty.setValue(max_qty)
+            elif self.sb_request_qty.value() < 1:
+                self.sb_request_qty.setValue(1)
 
-    def on_request(self):
+    def _on_request(self):
+        """Handle request button."""
         product = self.cb_request.currentText()
         if not product:
             QtWidgets.QMessageBox.information(self, "Запрос", "На складе нет материалов на полках.")
             return
 
+        from src.core.state import count_on_shelves
         max_qty = count_on_shelves(product)
         qty = min(self.sb_request_qty.value(), max_qty)
         if qty <= 0:
@@ -312,15 +404,133 @@ class WarehouseApp(QtWidgets.QMainWindow):
         request_product(product, qty)
         self.refresh_all()
 
-    def on_map_click(self, row, col):
+    def _on_rebalance(self):
+        """Handle rebalance button."""
+        rebalance_warehouse()
+        log("Ребалансировка склада выполнена")
+
+    def _on_check_rebalance(self):
+        """Handle check rebalance button."""
+        rebalance_warehouse(force=True)
+        log("Проверка и ребалансировка склада выполнена")
+
+    def _on_export_excel(self):
+        """Handle export to Excel."""
+        try:
+            import openpyxl
+            from openpyxl.chart import BarChart, Reference
+        except ImportError:
+            QtWidgets.QMessageBox.warning(
+                self, "Ошибка", "Установите openpyxl: pip install openpyxl"
+            )
+            return
+
+        from src.core.state import count_on_shelves, get_state
+        state = get_state()
+        
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        
+        ws_summary = wb.create_sheet(title="Сводка")
+        
+        ws_summary.append(["Сводный отчёт по всем товарам"])
+        ws_summary.append([])
+        ws_summary.append(["Товар", "Всего", "На полках", "Ушло по спросу"])
+        
+        for p in PRODUCTS:
+            total = state.stock_total.get(p, 0) + state.delivered_total.get(p, 0)
+            on_shelf = count_on_shelves(p)
+            delivered = state.delivered_total.get(p, 0)
+            ws_summary.append([p, total, on_shelf, delivered])
+        
+        chart = BarChart()
+        chart.title = "Товары: Всего, На полках, Ушло по спросу"
+        chart.x_axis.title = "Товар"
+        chart.y_axis.title = "Количество"
+        chart.height = 12
+        chart.width = 20
+        chart.type = "col"
+        chart.grouping = "clustered"
+        
+        data = Reference(ws_summary, min_col=2, min_row=3, max_col=4, max_row=3 + len(PRODUCTS))
+        cats = Reference(ws_summary, min_col=1, min_row=4, max_row=3 + len(PRODUCTS))
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        ws_summary.add_chart(chart, "F2")
+        
+        for p in PRODUCTS:
+            ws = wb.create_sheet(title=p)
+            
+            total = state.stock_total.get(p, 0) + state.delivered_total.get(p, 0)
+            on_shelf = count_on_shelves(p)
+            delivered = state.delivered_total.get(p, 0)
+            
+            ws.append([f"Отчёт по товару: {p}"])
+            ws.append([])
+            ws.append(["Показатель", "Значение"])
+            ws.append(["Всего", total])
+            ws.append(["На полках", on_shelf])
+            ws.append(["Ушло по спросу", delivered])
+            
+            ws.append([])
+            ws.append(["Показатель", "Количество"])
+            ws.append(["Всего", total])
+            ws.append(["На полках", on_shelf])
+            ws.append(["Ушло по спросу", delivered])
+            
+            chart = BarChart()
+            chart.title = f"Статистика: {p}"
+            chart.x_axis.title = "Показатель"
+            chart.y_axis.title = "Количество"
+            chart.height = 12
+            chart.width = 18
+            
+            data = Reference(ws, min_col=2, min_row=9, max_row=11)
+            cats = Reference(ws, min_col=1, min_row=9, max_row=11)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            ws.add_chart(chart, "D2")
+        
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Сохранить Excel", "", "Excel Files (*.xlsx)"
+        )
+        if filename:
+            if not filename.endswith('.xlsx'):
+                filename += '.xlsx'
+            wb.save(filename)
+            log(f"Экспорт в Excel: {filename}")
+            QtWidgets.QMessageBox.information(
+                self, "Успех", f"Файл сохранён:\n{filename}"
+            )
+
+    def _on_reset_robot(self, robot_id):
+        """Handle robot reset button."""
+        robot = robots[robot_id]
+        robot.reset()
+        log(f"РТС-{robot_id} сброшен на домашнюю позицию")
+
+    def _on_robot_capacity_changed(self, robot_id, capacity):
+        """Handle robot capacity changed."""
+        robots[robot_id].capacity = capacity
+        log(f"РТС-{robot_id} ёмкость изменена на {capacity}")
+
+    def _on_robot_speed_changed(self, robot_id, speed):
+        """Handle robot speed changed."""
+        robots[robot_id].speed = speed
+        log(f"РТС-{robot_id} скорость изменена на {speed}")
+
+    def _on_map_click(self, row, col):
+        """Handle map cell click."""
         x = col
         y = row
 
+        state = get_state()
+        
         if not is_shelf_cell(x, y):
             self.info_label.setText(f"Клетка ({x}, {y}) — проход/служебная зона")
             return
 
-        info = shelf_state[(x, y)]
+        info = state.shelf_state[(x, y)]
         if info["count"] == 0:
             self.info_label.setText(f"Полка ({x}, {y}) пустая")
         else:
@@ -330,25 +540,43 @@ class WarehouseApp(QtWidgets.QMainWindow):
             )
 
     def tick(self):
+        """Main simulation tick."""
         update_uav()
         assign_tasks()
         move_robots_one_step()
         advance_robot_phases()
+        check_stuck_robots()
+        check_rebalance_complete()
         self.refresh_all()
 
-    def refresh_request_products(self):
-        current = self.cb_request.currentText()
+    def _refresh_request_products(self):
+        """Refresh available products in request dropdown."""
+        from src.core.state import count_on_shelves
+        
         items = [p for p in PRODUCTS if count_on_shelves(p) > 0]
-        available_products = [p for p in items if self.sb_request_qty.maximum() > 0 or True]
-
+        
         self.cb_request.blockSignals(True)
-        self.cb_request.clear()
-        if items:
-            self.cb_request.addItems(items)
-            if current in items:
-                self.cb_request.setCurrentText(current)
-            elif items:
-                self.cb_request.setCurrentText(items[0])
+        current_idx = self.cb_request.currentIndex()
+        current_text = self.cb_request.currentText() if current_idx >= 0 else ""
+        
+        need_update = False
+        if self.cb_request.count() != len(items):
+            need_update = True
+        else:
+            for i, item in enumerate(items):
+                if self.cb_request.itemText(i) != item:
+                    need_update = True
+                    break
+        
+        if need_update:
+            self.cb_request.clear()
+            if items:
+                self.cb_request.addItems(items)
+                if current_text in items:
+                    self.cb_request.setCurrentIndex(items.index(current_text))
+                else:
+                    self.cb_request.setCurrentIndex(0)
+        
         self.cb_request.blockSignals(False)
 
         has_items = len(items) > 0
@@ -356,30 +584,51 @@ class WarehouseApp(QtWidgets.QMainWindow):
         self.sb_request_qty.setEnabled(has_items)
 
         if has_items:
-            self.on_request_product_changed()
+            self._on_request_product_changed()
         else:
             self.sb_request_qty.setRange(0, 0)
             self.sb_request_qty.setValue(0)
 
     def refresh_stats(self):
-        all_products = sorted(set(PRODUCTS) | set(stock_total.keys()))
+        """Refresh statistics table."""
+        from src.core.state import count_on_shelves, get_state
+        state = get_state()
+        
+        all_products = PRODUCTS
         self.stats_table.setRowCount(len(all_products))
 
+        product_to_qcolor = {
+            r.product: QtGui.QColor(int(r.color[0]*255), int(r.color[1]*255), int(r.color[2]*255))
+            for r in robots
+        }
+        
         for row, p in enumerate(all_products):
+            total_passed = state.stock_total.get(p, 0) + state.delivered_total.get(p, 0)
+            on_shelves = count_on_shelves(p)
+            delivered = state.delivered_total.get(p, 0)
+            
             vals = [
                 p,
-                str(stock_total.get(p, 0)),
-                str(count_on_shelves(p)),
-                "0",
+                str(total_passed),
+                str(on_shelves),
+                str(delivered),
             ]
             for col, val in enumerate(vals):
                 item = QtWidgets.QTableWidgetItem(val)
-                if col == 0 and p in PRODUCT_QCOLORS:
-                    item.setBackground(PRODUCT_QCOLORS[p])
+                if col == 0:
+                    color = product_to_qcolor.get(p, QtGui.QColor(128, 128, 128))
+                    item.setBackground(color)
                 self.stats_table.setItem(row, col, item)
 
     def refresh_map(self):
-        product_to_qcolor = {r.product: QtGui.QColor(int(r.color[0]*255), int(r.color[1]*255), int(r.color[2]*255)) for r in robots}
+        """Refresh map table."""
+        from src.core.state import get_state
+        state = get_state()
+        
+        product_to_qcolor = {
+            r.product: QtGui.QColor(int(r.color[0]*255), int(r.color[1]*255), int(r.color[2]*255))
+            for r in robots
+        }
         
         for y in range(GRID_H):
             for x in range(GRID_W):
@@ -398,7 +647,7 @@ class WarehouseApp(QtWidgets.QMainWindow):
                     item.setBackground(QtGui.QColor(120, 220, 220))
 
                 elif is_shelf_cell(x, y):
-                    info = shelf_state[(x, y)]
+                    info = state.shelf_state[(x, y)]
                     if info["count"] == 0:
                         item.setText("0/5")
                         item.setBackground(QtGui.QColor(95, 95, 100))
@@ -415,10 +664,13 @@ class WarehouseApp(QtWidgets.QMainWindow):
                 self.map_table.setItem(y, x, item)
 
     def refresh_log(self):
-        self.log_text.setPlainText("\n".join(event_log))
+        """Refresh log text."""
+        state = get_state()
+        self.log_text.setPlainText("\n".join(state.event_log))
 
     def refresh_all(self):
-        self.refresh_request_products()
+        """Refresh all UI elements."""
+        self._refresh_request_products()
         self.refresh_stats()
         self.refresh_map()
         self.refresh_log()
