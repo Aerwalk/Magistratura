@@ -1,8 +1,8 @@
 """Rebalancer module."""
 
-from src.config import SHELF_CAPACITY, EXIT_CELL
+from src.config import SHELF_CAPACITY
 from src.core.state import get_state
-from src.core.grid import all_shelves, manhattan, shelf_distance_score
+from src.core.grid import all_shelves, manhattan, shelf_distance_score, get_exit_cell
 from src.entities import robots
 
 
@@ -14,7 +14,7 @@ def rebalance_warehouse(force: bool = False) -> None:
         state.event_log.appendleft("Недостаточно данных для ребалансировки")
         return
     
-    shelves_by_distance = sorted(all_shelves(), key=lambda s: manhattan(s, EXIT_CELL))
+    shelves_by_distance = sorted(all_shelves(), key=lambda s: manhattan(s, get_exit_cell()))
     
     shelves_capacity = {}
     for shelf in shelves_by_distance:

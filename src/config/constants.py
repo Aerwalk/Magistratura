@@ -5,6 +5,24 @@ from PyQt5 import QtGui
 
 PRODUCTS = ["metal", "plastic", "electronics", "wood", "glass"]
 
+
+def add_product(name: str, color: tuple, qcolor=None):
+    """Dynamically add a new product type."""
+    if name in PRODUCTS:
+        return
+    PRODUCTS.append(name)
+    PRODUCT_COLORS[name] = color
+    if qcolor:
+        PRODUCT_QCOLORS[name] = qcolor
+    else:
+        r, g, b, _ = color
+        PRODUCT_QCOLORS[name] = QtGui.QColor(int(r*255), int(g*255), int(b*255))
+    from src.core.state import get_state
+    from collections import deque
+    state = get_state()
+    state.robot_task_queues[name] = deque()
+    state.event_log.appendleft(f"Добавлен новый материал: {name}")
+
 PRODUCT_COLORS = {
     "metal": (0.78, 0.78, 0.82, 1.0),
     "plastic": (0.10, 0.55, 0.95, 1.0),

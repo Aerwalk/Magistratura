@@ -16,6 +16,7 @@ from .constants import (
     SHELF_X,
     GRID_W,
     GRID_H,
+    add_product,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "SHELF_X",
     "GRID_W",
     "GRID_H",
+    "add_product",
 ]

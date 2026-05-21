@@ -4,7 +4,7 @@ from collections import deque, defaultdict
 from typing import Optional
 
 from src.config import PRODUCTS, SHELF_CAPACITY
-from src.core.grid import all_shelves
+from src.core.grid import all_shelves, get_grid_w, get_grid_h
 
 
 class WarehouseState:

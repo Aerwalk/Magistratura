@@ -2,17 +2,33 @@
 
 from typing import Optional
 
-from src.config import ROBOT_CONFIG, AGENT_SPEED
+from src.config import PRODUCTS, PRODUCT_COLORS, AGENT_SPEED, HOME_CELLS
+
+
+_ROBOT_INITIAL_CONFIG = [
+    {"product": "metal", "color": (1.0, 0.1, 0.1, 1.0), "home": (14, 1)},
+    {"product": "plastic", "color": (0.1, 0.4, 1.0, 1.0), "home": (14, 3)},
+    {"product": "electronics", "color": (1.0, 0.5, 0.1, 1.0), "home": (14, 5)},
+    {"product": "wood", "color": (0.1, 0.8, 0.3, 1.0), "home": (14, 7)},
+    {"product": "glass", "color": (0.8, 0.2, 0.8, 1.0), "home": (14, 9)},
+]
+
+
+def _rand_color():
+    import random
+    import numpy as np
+    return (float(random.random()), float(random.random()), float(random.random()), 1.0)
 
 
 class Robot:
     """Ground robot (РТС) for material transport."""
     
-    def __init__(self, idx: int, config: dict):
-        home = config["home"]
+    def __init__(self, idx: int, product: str, color: tuple, home: tuple):
         self.id = idx
-        self.product = config["product"]
-        self.color = config["color"]
+        self.name = f"РТС-{idx}"
+        self.product = product
+        self.products = {product}
+        self.color = color
         self.home = home
         self.pos = home
         self.draw_pos = [float(home[0]), float(home[1])]
@@ -71,4 +87,39 @@ class Robot:
 
 
 # Global robots list
-robots = [Robot(idx, cfg) for idx, cfg in enumerate(ROBOT_CONFIG)]
+robots = [Robot(idx, cfg["product"], cfg["color"], cfg["home"]) for idx, cfg in enumerate(_ROBOT_INITIAL_CONFIG)]
+
+
+def _next_id() -> int:
+    """Get next available robot ID."""
+    return max(r.id for r in robots) + 1 if robots else 0
+
+
+def _next_home() -> tuple:
+    """Find next available home cell."""
+    used_homes = {r.home for r in robots}
+    for cell in (14, 0), (14, 2), (14, 4), (14, 6), (14, 8), (14, 10), (14, 11):
+        if cell not in used_homes:
+            return cell
+    return None
+
+
+def create_robot(product: str) -> Optional[Robot]:
+    """Create a new robot for the given product and add it to the simulation."""
+    home = _next_home()
+    if home is None:
+        return None
+    
+    from src.core.grid import add_home_cell
+    add_home_cell(home)
+    
+    color = PRODUCT_COLORS.get(product, _rand_color())
+    new_id = _next_id()
+    robot = Robot(new_id, product, color, home)
+    robots.append(robot)
+    
+    from src.core.state import get_state
+    state = get_state()
+    state.event_log.appendleft(f"{robot.name} создан для продукта {product}, станция {home}")
+    
+    return robot

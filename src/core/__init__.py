@@ -7,6 +7,7 @@ from .grid import (
     shelf_access_cells,
     shelf_distance_score,
     manhattan,
+    add_home_cell,
 )
 from .pathfinding import astar
 from .state import (

@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from src.config import SHELF_CAPACITY, EXIT_CELL, INBOUND_PICK_CELL
+from src.config import SHELF_CAPACITY
 from src.core.state import get_state, count_on_shelves, product_hotness
-from src.core.grid import shelf_access_cells, manhattan, all_shelves, shelf_distance_score
+from src.core.grid import shelf_access_cells, manhattan, all_shelves, shelf_distance_score, get_exit_cell, get_inbound_pick_cell
 from src.core.pathfinding import astar
 from src.entities import robots
 from src.entities.base import move_agent_towards_2d, close2
@@ -120,6 +120,15 @@ def _handle_putaway_phase(r, task):
         blocked = _get_blocked_cells(exclude_robot=r)
         access = min(accesses, key=lambda c: manhattan(r.pos, c))
         r.route = astar(r.pos, access, blocked=blocked)
+        if not r.route:
+            state.event_log.appendleft(
+                f"⚠ {r.name}: нет пути к полке {shelf} для размещения!"
+            )
+            state.reserved_put_shelves.discard(shelf)
+            r.carry = None
+            r.task = None
+            r.phase = "idle"
+            return
         r.target_shelf = shelf
         r.phase = "to_shelf_for_put"
 
@@ -150,12 +159,15 @@ def _handle_putaway_phase(r, task):
 
         if state.robot_task_queues[r.product]:
             blocked = _get_blocked_cells(exclude_robot=r)
-            route = astar(r.pos, INBOUND_PICK_CELL, blocked=blocked)
+            route = astar(r.pos, get_inbound_pick_cell(), blocked=blocked)
             if route:
                 r.task = state.robot_task_queues[r.product].popleft()
                 r.phase = "to_pickup_zone"
                 r.route = route
             else:
+                state.event_log.appendleft(
+                    f"⚠ {r.name}: нет пути к зоне забора для следующей задачи!"
+                )
                 r.phase = "idle"
         else:
             r.phase = "idle"
@@ -184,8 +196,20 @@ def _handle_retrieve_phase(r, task):
 
         state.reserved_pick_shelves.discard(shelf)
         blocked = _get_blocked_cells(exclude_robot=r)
-        r.route = astar(r.pos, EXIT_CELL, blocked=blocked)
-        r.final_route_after_exit = astar(EXIT_CELL, r.home, blocked=blocked)
+        r.route = astar(r.pos, get_exit_cell(), blocked=blocked)
+        if not r.route:
+            state.event_log.appendleft(
+                f"⚠ {r.name}: нет пути к выходу!"
+            )
+            r.carry = None
+            r.task = None
+            r.phase = "idle"
+            return
+        r.final_route_after_exit = astar(get_exit_cell(), r.home, blocked=blocked)
+        if not r.final_route_after_exit:
+            state.event_log.appendleft(
+                f"⚠ {r.name}: нет пути домой от выхода!"
+            )
         r.phase = "to_exit"
 
     elif r.phase == "to_exit":
@@ -225,17 +249,33 @@ def _handle_retrieve_phase(r, task):
                         state.reserved_pick_shelves.discard(shelf)
                         r.phase = "idle"
                         r.route = astar(r.pos, r.home, blocked=blocked)
+                        if not r.route:
+                            state.event_log.appendleft(
+                                f"⚠ {r.name}: нет пути домой от {r.pos}!"
+                            )
                 else:
                     state.reserved_pick_shelves.discard(shelf)
                     r.phase = "idle"
                     r.route = astar(r.pos, r.home, blocked=blocked)
+                    if not r.route:
+                        state.event_log.appendleft(
+                            f"⚠ {r.name}: нет пути домой от {r.pos}!"
+                        )
             else:
                 r.phase = "idle"
                 r.route = astar(r.pos, r.home, blocked=blocked)
+                if not r.route:
+                    state.event_log.appendleft(
+                        f"⚠ {r.name}: нет пути домой от {r.pos}!"
+                    )
         else:
             r.phase = "idle"
             blocked = _get_blocked_cells(exclude_robot=r)
             r.route = astar(r.pos, r.home, blocked=blocked)
+            if not r.route:
+                state.event_log.appendleft(
+                    f"⚠ {r.name}: нет пути домой от {r.pos}!"
+                )
 
 
 def _handle_rebalance_phase(r, task):

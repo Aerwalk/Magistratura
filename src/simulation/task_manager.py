@@ -4,9 +4,39 @@ import random
 
 from src.config import PRODUCTS
 from src.core.state import get_state
-from src.core.grid import shelf_access_cells, shelf_distance_score, manhattan, all_shelves
+from src.core.grid import shelf_access_cells, shelf_distance_score, manhattan, all_shelves, get_inbound_pick_cell, get_exit_cell
 from src.core.pathfinding import astar
 from src.entities import robots
+
+
+def _has_robot_for(product: str) -> bool:
+    """Check if any robot can carry this product."""
+    from src.entities import robots
+    return any(product in r.products for r in robots)
+
+
+def _warn_no_robot(product: str):
+    """Log warning if no robot can carry the product."""
+    from src.core.state import get_state
+    if not _has_robot_for(product):
+        state = get_state()
+        state.event_log.appendleft(
+            f"⚠ ВНИМАНИЕ: нет РТС, способного возить {product}!"
+        )
+
+
+def _warn_full_shelves(product: str):
+    """Log warning if all shelves for a product are full."""
+    from src.core.state import get_state, SHELF_CAPACITY
+    state = get_state()
+    full = sum(
+        1 for info in state.shelf_state.values()
+        if info["product"] == product and info["count"] >= SHELF_CAPACITY - 1
+    )
+    if full >= 3:
+        state.event_log.appendleft(
+            f"⚠ ВНИМАНИЕ: полки для {product} почти заполнены ({full} полок заняты)!"
+        )
 
 
 def supply_labeled(product: str, qty: int) -> None:
@@ -14,6 +44,7 @@ def supply_labeled(product: str, qty: int) -> None:
     state = get_state()
     if qty <= 0:
         return
+    _warn_no_robot(product)
     for _ in range(qty):
         state.stock_total[product] += 1
         state.robot_task_queues[product].append(
@@ -38,6 +69,9 @@ def request_product(product: str, qty: int) -> None:
     state = get_state()
     if qty <= 0:
         return
+
+    _warn_no_robot(product)
+    _warn_full_shelves(product)
 
     available = sum(
         info["count"]
@@ -115,9 +149,8 @@ def assign_tasks() -> None:
         if robot.is_active():
             continue
 
-        queue = state.robot_task_queues[robot.product]
-
-        if not queue:
+        queue = _pick_robot_queue(robot, state)
+        if queue is None:
             if robot.pos != robot.home:
                 blocked = _get_blocked_cells(exclude_robot=robot)
                 route = astar(robot.pos, robot.home, blocked=blocked)
@@ -132,7 +165,7 @@ def assign_tasks() -> None:
             from_shelf = task["from_shelf"]
             info = state.shelf_state[from_shelf]
 
-            if info["count"] == 0 or info["product"] != robot.product:
+            if info["count"] == 0 or info["product"] not in robot.products:
                 queue.popleft()
                 continue
 
@@ -150,13 +183,20 @@ def assign_tasks() -> None:
                 robot.phase = "rebalance_pick"
                 robot.route = route
                 robot.target_shelf = from_shelf
+            else:
+                state.event_log.appendleft(
+                    f"⚠ {robot.name}: нет пути к полке {from_shelf} для ребалансировки!"
+                )
             continue
 
         blocked = _get_blocked_cells(exclude_robot=robot)
 
         if task["type"] == "putaway":
-            route = astar(robot.pos, (2, 1), blocked=blocked)
+            route = astar(robot.pos, get_inbound_pick_cell(), blocked=blocked)
             if len(route) == 0:
+                state.event_log.appendleft(
+                    f"⚠ {robot.name}: нет пути к зоне забора!"
+                )
                 continue
             robot.task = queue.popleft()
             robot.phase = "to_pickup_zone"
@@ -180,12 +220,16 @@ def assign_tasks() -> None:
             state.reserved_pick_shelves.add(shelf)
             access = min(accesses, key=lambda c: manhattan(robot.pos, c))
             blocked_for_route = _get_blocked_cells(exclude_robot=robot)
+            ex = get_exit_cell()
             route1 = astar(robot.pos, access, blocked=blocked_for_route)
-            route2 = astar(access, (0, 5), blocked=blocked_for_route)
-            route3 = astar((0, 5), robot.home, blocked=blocked_for_route)
+            route2 = astar(access, ex, blocked=blocked_for_route)
+            route3 = astar(ex, robot.home, blocked=blocked_for_route)
 
             if len(route1) == 0:
                 state.reserved_pick_shelves.discard(shelf)
+                state.event_log.appendleft(
+                    f"⚠ {robot.name}: нет пути к полке {shelf} для забора!"
+                )
                 continue
 
             robot.task = queue.popleft()
@@ -196,3 +240,12 @@ def assign_tasks() -> None:
             robot.final_route_after_exit = route3
             robot.carry = None
             robot.target_shelf = shelf
+
+
+def _pick_robot_queue(robot, state):
+    """Pick the first non-empty task queue from robot's available products."""
+    for p in robot.products:
+        q = state.robot_task_queues.get(p)
+        if q and len(q) > 0:
+            return q
+    return None

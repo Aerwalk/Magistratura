@@ -3,8 +3,9 @@
 import random
 import numpy as np
 
-from src.config import AGENT_SPEED, INBOUND_CELL, UAV_HOME_POS, PRODUCTS
+from src.config import AGENT_SPEED, UAV_HOME_POS, PRODUCTS
 from src.core.state import get_state
+from src.core.grid import get_inbound_cell
 from src.entities import uav
 from src.entities.base import close3
 
@@ -18,7 +19,8 @@ def update_uav() -> None:
             uav.state = "to_inbound"
 
     elif uav.state == "to_inbound":
-        target = (INBOUND_CELL[0], INBOUND_CELL[1], 3.2)
+        inbound = get_inbound_cell()
+        target = (inbound[0], inbound[1], 3.2)
         _move_uav_towards(target)
         if close3(uav.pos, target):
             uav.state = "scanning"
@@ -33,6 +35,11 @@ def update_uav() -> None:
                 f"БВС распознал товар без метки как {product}, количество {qty}"
             )
 
+            from src.entities import robots
+            has_robot = any(product in r.products for r in robots)
+            if not has_robot:
+                state.event_log.appendleft(f"⚠ ВНИМАНИЕ: нет РТС, способного возить {product}!")
+            
             for _ in range(qty):
                 state.stock_total[product] += 1
                 state.robot_task_queues[product].append(
