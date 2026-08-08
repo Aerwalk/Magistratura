@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: magsim-backend
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: magsim-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+networks:
+  magsim-net:
+    driver: bridge

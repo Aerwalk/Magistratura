@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MagSim — Управление складом</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header id="header">
+    <button id="menuToggle" aria-label="Меню">☰</button>
+    <h1><span>Mag</span>Sim</h1>
+    <span id="statusIndicator">Отключено</span>
+    <button id="btnTheme" aria-label="Тема">☀</button>
+  </header>
+
+  <div id="main">
+    <div id="view3d">
+      <div id="view3d-label">🖱 Вращение · Колесо: зум · ПКМ: панорама</div>
+    </div>
+
+    <aside id="sidebar">
+
+      <!-- Controls -->
+      <div class="panel" id="panel-controls">
+        <div class="panel-header" data-target="controls-content">
+          Управление <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="controls-content">
+          <div class="control-row">
+            <select id="productSelect" class="input-sm"></select>
+            <input type="number" id="qtyInput" value="3" min="1" max="20" class="input-sm">
+          </div>
+          <div class="control-row">
+            <button class="btn btn-success btn-sm" id="btnSupply">📦 Поставка</button>
+            <button class="btn btn-warning btn-sm" id="btnUnlabeled">📋 Без метки</button>
+            <button class="btn btn-accent btn-sm" id="btnRequest">🛒 Запрос</button>
+          </div>
+          <hr style="border-color:var(--border);margin:8px 0;">
+          <div class="control-row">
+            <select id="newRobotProduct" class="input-sm" style="flex:1;"></select>
+            <button class="btn btn-outline btn-sm" id="btnCreateRobot">+ РТС</button>
+          </div>
+          <div class="control-row">
+            <input type="text" id="newProductName" placeholder="Название" class="input-sm" style="flex:1;">
+            <div class="color-picker-wrapper">
+              <input type="color" id="newProductColor" value="#3498db">
+            </div>
+            <button class="btn btn-outline btn-sm" id="btnCreateProduct">+ Мат-л</button>
+          </div>
+          <div class="control-row">
+            <button class="btn btn-warning btn-sm" id="btnRebalance">⚖ Ребаланс</button>
+            <button class="btn btn-outline btn-sm" id="btnExcel">📊 Excel</button>
+            <button class="btn btn-outline btn-sm" id="btnAnalytics">📈 Аналитика</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Grid Editor -->
+      <div class="panel" id="panel-grid">
+        <div class="panel-header collapsed" data-target="grid-content">
+          Карта <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="grid-content">
+          <div class="control-row">
+            <label>Ш×В</label>
+            <input type="number" id="gridWidth" min="8" max="30" value="16" class="input-sm" style="width:55px">
+            <input type="number" id="gridHeight" min="6" max="20" value="12" class="input-sm" style="width:55px">
+            <button class="btn btn-outline btn-sm" id="btnApplyGrid">Прим.</button>
+          </div>
+          <div class="control-row">
+            <button class="btn btn-outline btn-sm" id="btnEditMode">✏ Режим правки</button>
+            <span id="editStatus" style="font-size:11px;color:var(--text-muted);margin-left:4px">выкл</span>
+          </div>
+          <div class="control-row" id="editCellInfo" style="display:none;flex-wrap:wrap;gap:4px;">
+            <span style="font-size:11px;color:var(--text-secondary);width:100%" id="cellInfoText">—</span>
+            <button class="btn btn-sm btn-accent" id="btnSetExit">Выход</button>
+            <button class="btn btn-sm btn-success" id="btnSetInbound">Приём</button>
+            <button class="btn btn-sm btn-warning" id="btnSetPick">Забор</button>
+            <button class="btn btn-sm btn-success" id="btnAddShelf">+ Полка</button>
+            <button class="btn btn-sm btn-danger" id="btnRemoveShelf">− Полка</button>
+          </div>
+          <div class="control-row" id="editShelfInfo" style="display:none;flex-wrap:wrap;gap:4px;margin-top:4px;padding:6px;background:var(--bg-card);border-radius:var(--radius-sm);">
+            <span style="font-size:11px;color:var(--text-secondary);width:100%">Настройки полки</span>
+            <label style="font-size:11px;display:flex;align-items:center;gap:4px;">Вместимость <input type="number" id="editShelfCapacity" min="1" max="20" value="5" style="width:45px;"></label>
+            <button class="btn btn-sm btn-outline" id="btnApplyShelfCapacity">Прим.</button>
+            <div style="font-size:11px;width:100%;margin-top:2px;">Разрешённые материалы:</div>
+            <div id="editShelfProducts" style="display:flex;flex-wrap:wrap;gap:3px;"></div>
+            <button class="btn btn-sm btn-outline" id="btnApplyShelfProducts">Прим.</button>
+          </div>
+          <div class="control-row" id="editRobotHomeInfo" style="display:none;flex-wrap:wrap;gap:4px;margin-top:4px;padding:6px;background:var(--bg-card);border-radius:var(--radius-sm);">
+            <span style="font-size:11px;color:var(--text-secondary);width:100%">Станция РТС</span>
+            <select id="editRobotHomeSelect" style="flex:1;font-size:11px;"></select>
+            <button class="btn btn-sm btn-outline" id="btnSetRobotHome">Установить</button>
+          </div>
+          <div class="control-row" style="margin-top:6px;padding:6px;background:var(--bg-card);border-radius:var(--radius-sm);">
+            <span style="font-size:11px;color:var(--text-secondary);">Цвет БВС</span>
+            <div class="color-picker-wrapper">
+              <input type="color" id="uavColorPicker" value="#f59e0b">
+            </div>
+            <button class="btn btn-sm btn-outline" id="btnSetUavColor">Прим.</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Robots -->
+      <div class="panel" id="panel-robots">
+        <div class="panel-header collapsed" data-target="robots-content">
+          РТС <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="robots-content"></div>
+      </div>
+
+      <!-- Stats -->
+      <div class="panel" id="panel-stats">
+        <div class="panel-header collapsed" data-target="stats-content">
+          Статистика <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="stats-content"></div>
+      </div>
+
+      <!-- Tests -->
+      <div class="panel" id="panel-tests">
+        <div class="panel-header collapsed" data-target="tests-content">
+          Тесты <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="tests-content">
+          <div class="control-row">
+            <button class="btn btn-sm btn-outline" id="btnRunAllTests">🧪 Запустить тесты</button>
+          </div>
+          <div class="control-row" style="flex-wrap:wrap;gap:3px;" id="scenarioButtons"></div>
+          <div id="testResults" style="font-size:11px;max-height:300px;overflow-y:auto;margin-top:4px;"></div>
+        </div>
+      </div>
+
+      <!-- Log -->
+      <div class="panel" id="panel-log">
+        <div class="panel-header" data-target="log-content">
+          Лог событий <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="log-content"></div>
+      </div>
+
+    </aside>
+  </div>
+
+  <div id="mobile-overlay"></div>
+
+  <!-- Analytics Modal -->
+  <div id="analyticsModal" class="modal-overlay" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span>📈 Аналитика склада</span>
+        <button class="modal-close" id="btnAnalyticsClose">&times;</button>
+      </div>
+      <div class="modal-body" id="analyticsBody">
+        <div class="analytics-summary" id="analyticsSummary"></div>
+        <div class="analytics-chart-toolbar">
+          <select id="analyticsProductFilter">
+            <option value="all">Все продукты</option>
+          </select>
+        </div>
+        <div class="analytics-chart-container">
+          <canvas id="analyticsChart"></canvas>
+        </div>
+        <div class="analytics-table-container">
+          <table class="analytics-table" id="analyticsTable">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Материал</th>
+                <th>Всего поставок</th>
+                <th>Спрос</th>
+                <th>Доставлено на склад</th>
+                <th>Забрано со склада</th>
+                <th>В очереди</th>
+                <th>На полках</th>
+              </tr>
+            </thead>
+            <tbody id="analyticsTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
