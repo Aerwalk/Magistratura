@@ -1,0 +1,119 @@
+@startuml
+title MagSim Web — Диаграмма компонентов
+
+skinparam linetype ortho
+
+package "Фронтенд (браузер)" {
+  component [Three.js 3D-сцена\nWebGL + OrbitControls] as FE3D
+  component [UI-панели\n(управление, РТС, статистика, лог, редактирование)] as FEUI
+  component [WebSocket-клиент\nconnectWS() / send()] as FEWS
+  component [Дашборд\n(графики батареи, прогнозы)] as FEDASH
+  FEUI --> FE3D
+  FEWS --> FEUI : state_update → onStateUpdate()
+  FEDASH --> FEWS : /api/*
+}
+
+package "Бэкенд (FastAPI, контейнер magsim-backend)" {
+  component [REST API\n/api/stats, /api/export/excel,\n/api/telemetry, /api/log,\n/api/health, /api/debug,\n/api/predictions, /api/dashboard,\n/api/run-tests, /api/scenarios,\n/api/run-scenario/{id},\n/metrics (Prometheus)] as REST
+  component [WebSocket /ws\n(команды UI + broadcast)] as WSEP
+  component [WebSocket /agent/ws/robot\n(пул РТС-агентов)] as WSEPROB
+  component [WebSocket /agent/ws/uav\n(БВС-агент)] as WSEUAV
+
+  component [Состояние симуляции\nWarehouseState (singleton)] as STATE
+  component [Grid + A* Pathfinding] as CORE
+  component [Диспетчер задач\n(supply/request/assign)] as TASK
+  component [Контроллер РТС\n(advance_robot_phases)] as ROBCTL
+  component [Контроллер БВС\n(update_uav)] as UAVCTL
+  component [Ребалансировщик\n(rebalance_warehouse)] as REBAL
+  component [Цикл симуляции\n(50 мс)] as TICK
+
+  component [AgentRegistry\n(справочник WS-агентов)] as AGENTS
+  component [WebSocketManager\n(broadcast состояния)] as WSM
+
+  component [Адаптер БД\nasyncpg + очереди + writer_loop\n(сброс каждые 5 с)] as DBAPI
+
+  component [Prometheus-метрики\n(render_prometheus)\n gauges + counters] as METRICS
+
+  TICK --> ROBCTL : advance_robot_phases
+  TICK --> TASK : assign_tasks
+  TICK --> UAVCTL : update_uav
+  TICK --> REBAL : check_rebalance_complete
+  TICK --> DBAPI : emit_telemetry (≈1 Гц)
+  TICK --> WSM : broadcast(serialize_state)
+  TICK --> METRICS : record_sim_tick
+
+  WSEP --> TASK : supply_labeled / supply_unlabeled / request_product
+  WSEP --> TASK : create_robot / create_product / rebalance
+  WSEP --> CORE : set_grid_size / клетки / полки
+  WSEP --> ROBCTL : set_robot_* / replace_battery / reset_robot
+  WSEP --> REBAL : rebalance
+  WSM ..> WSEP : state_update → фронт
+
+  ROBCTL ..> AGENTS : fire_and_forget(send_robot)
+  UAVCTL ..> AGENTS : send_uav(scan)
+  WSEPROB ..> AGENTS : регистрация пула
+  WSEUAV ..> AGENTS : регистрация
+
+  ROBCTL --> STATE : чтение/резервирование полок
+  ROBCTL --> METRICS : record_cell_visit, record_task_completed, record_stuck_event
+  TASK --> STATE : очереди задач
+  TASK --> CORE : astar / полки
+  TASK --> METRICS : record_task_assigned
+  ROBCTL --> CORE : astar / blocked cells
+  UAVCTL --> STATE : uav_scan_queue
+  UAVCTL --> CORE : get_inbound_cell
+  REBAL --> STATE : расчёт перемещений
+  REBAL --> TASK : robot_task_queues
+
+  REST --> DBAPI : статистика / телеметрия / прогнозы
+  REST --> METRICS : GET /metrics → render_prometheus()
+  DBAPI --> STATE
+  METRICS --> STATE : record_warehouse() — gauge по продуктам
+  METRICS --> AGENTS : record_health() — connected/ready
+}
+
+package "РТС-агенты (контейнеры robot-agent, 5×(N) реплик)" {
+  component [RobotAgent\n(движение, батарея, маршрут)] as ROBAG
+  component [WebSocket-клиент\nws://backend:8000/agent/ws/robot] as ROBWS
+  ROBWS <--> ROBAG : cmd: assign/route/start_charging/…\nсообщения: ready/arrived/charge_end/telemetry
+}
+
+package "БВС-агент (контейнер uav-agent)" {
+  component [UAVAgent\n(конечный автомат)] as UAVAG
+  component [WebSocket-клиент\nws://backend:8000/agent/ws/uav] as UAVWS
+  UAVWS <--> UAVAG : cmd: scan\nсообщения: scan_done/telemetry
+}
+
+package "Масштабировщик (контейнер robot-scaler)" {
+  component [RobotScaler\n(опрос /api/debug → docker compose scale)] as SCALER
+}
+
+package "Мониторинг и данные" {
+  database [TimescaleDB\n(robot_telemetry, robot_logs,\nrobot_charge_sessions)] as TSD
+  component [Prometheus\n(:9090, scrape 5 с,\nalertrules.yml)] as PROM
+  component [Blackbox Exporter\n(HTTP/TCP пробы)] as BLACKBOX
+  component [Grafana\n(:3000,\n4 дашборда: battery/fleet/health/heatmap,\nисточники: Prometheus + TimescaleDB)] as GRAF
+  component [Excel-отчёт\n(openpyxl)] as XLS
+}
+
+FEWS --> WSEP : WS /ws
+FEDASH --> REST : HTTP GET
+FEWS --> REST : /api/export/excel (скачивание)
+
+WSEPROB --> ROBWS : WS
+WSEUAV --> UAVWS : WS
+ROBAG ..> ROBCTL : телеметрия через бэкенд
+UAVAG ..> UAVCTL : результат сканирования через бэкенд
+
+SCALER --> REST : GET /api/debug
+ROBWS <--> SCALER : docker compose --scale robot-agent=N
+
+DBAPI --> TSD : asyncpg COPY / executemany
+PROM --> REST : scrape /metrics каждые 5 с
+PROM --> BLACKBOX : scrape :9115
+PROM --> BLACKBOX : HTTP/TCP пробы → backend/frontend/grafana/timescale
+GRAF --> PROM : источник данных Prometheus (uid=prometheus)
+GRAF --> TSD : источник данных TimescaleDB (uid=timescaledb2, default)
+REST --> XLS : export_excel
+
+@enduml

@@ -36,6 +36,19 @@ const dom = {
   btnCreateRobot: $('#btnCreateRobot'),
   btnCreateProduct: $('#btnCreateProduct'),
   btnRebalance: $('#btnRebalance'),
+  simToggle: $('#simToggle'),
+  simInterval: $('#simInterval'),
+  simFireNow: $('#simFireNow'),
+  simSupply: $('#simSupply'),
+  simUnlabeled: $('#simUnlabeled'),
+  simRequest: $('#simRequest'),
+  simGrid: $('#simGrid'),
+  simAddRobot: $('#simAddRobot'),
+  simRemoveRobot: $('#simRemoveRobot'),
+  simSpeed: $('#simSpeed'),
+  simCapacity: $('#simCapacity'),
+  simAddProduct: $('#simAddProduct'),
+  simStats: $('#simStats'),
   newProductName: $('#newProductName'),
   newProductColor: $('#newProductColor'),
   robotsContent: $('#robots-content'),
@@ -73,6 +86,16 @@ const dom = {
   scenarioButtons: $('#scenarioButtons'),
   analyticsTbody: $('#analyticsTbody'),
   analyticsSummary: $('#analyticsSummary'),
+  btnDashboard: $('#btnDashboard'),
+  dashboardView: $('#dashboardView'),
+  mainEl: $('#main'),
+  btnDashboardBack: $('#btnDashboardBack'),
+  dashStatus: $('#dashStatus'),
+  dashStats: $('#dashStats'),
+  dashWarnings: $('#dashWarnings'),
+  dashChartBattery: $('#dashChartBattery'),
+  dashChartMax: $('#dashChartMax'),
+  dashLiveGrid: $('#dashLiveGrid'),
 };
 
 let analyticsChartInstance = null;
@@ -698,18 +721,21 @@ function updateRobotsUI(robotsData) {
         <span class="robot-dot" style="background:${r.color}"></span>
         <input type="text" class="robot-name-input" value="${nameVal.replace(/"/g, '&quot;')}" data-rid="${r.id}" data-action="rename">
         <span class="robot-phase ${phaseClass}">${r.phase}${r.carry ? ' ['+r.carry+']' : ''}</span>
+        ${r.stuck ? '<span class="stuck-badge" title="Застрял: стоит на месте более 30с вне базовой станции">⚠ ЗАСТРЯЛ</span>' : ''}
       </div>
       <div class="robot-details">
         <span>🚀 ${parseFloat(spdVal).toFixed(2)}</span>
         <span>📦 ${capVal}</span>
         <span>📍 ${r.draw_pos[0].toFixed(1)},${r.draw_pos[1].toFixed(1)}</span>
         <span>🏠 (${r.home[0]},${r.home[1]})</span>
+        <span title="Батарея / макс. ёмкость">🔋 ${Math.round(r.battery)}%${r.charging ? ' ⚡' : ''}${r.charging && r.charge_eta_sec != null ? ` (~${Math.round(r.charge_eta_sec)}с до 100%)` : ''}${r.battery_max < 100 ? ' (max ' + Math.round(r.battery_max) + '%)' : ''}</span>
       </div>
       <div class="product-checkboxes">${productCheckboxes}</div>
       <div class="robot-controls">
         <label>Скорость <input type="range" min="0" max="1" step="0.01" value="${spdVal}" data-rid="${r.id}" data-action="speed"></label>
         <label>Вмест. <input type="number" min="1" max="10" value="${capVal}" data-rid="${r.id}" data-action="capacity" class="cap-input"></label>
         <div class="color-picker-wrapper" style="display:inline-flex"><input type="color" value="${r.color}" data-rid="${r.id}" data-action="robotcolor" style="width:28px;height:24px;padding:1px;border-radius:3px;"></div>
+        <button class="btn btn-warning btn-sm" data-rid="${r.id}" data-action="battery" title="Принудительная замена аккумулятора (сброс деградации)">Заменить АКБ</button>
         <button class="btn btn-danger btn-sm" data-rid="${r.id}" data-action="reset">Сброс</button>
       </div>
     </div>`;
@@ -815,6 +841,206 @@ function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
   }
+}
+
+// ─── Warehouse autopilot (simulates real warehouse traffic) ───
+const autosim = {
+  timer: null,
+  base: null,
+  gridBig: false,
+  fires: 0,
+  last: '',
+  lastSupplyProd: null,
+  lastRequestProd: null,
+  lastRobotProd: null,
+};
+
+// Relative frequency of each command: higher weight = fires more often.
+const SIM_WEIGHTS = {
+  supply: 30,
+  unlabeled: 18,
+  request: 25,
+  grid: 4,
+  add_robot: 6,
+  remove_robot: 3,
+  speed: 12,
+  capacity: 10,
+  add_product: 3,
+};
+
+const SIM_PRODUCT_NAMES = ['titanium', 'rubber', 'ceramic', 'leather', 'silicon', 'brass', 'bronze', 'fabric', 'resin', 'quartz'];
+const SIM_PRODUCT_COLORS = ['#e74c3c', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#e84393', '#6ab04c', '#f0932b', '#4834d4'];
+
+function autosimHexToRgba(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255, 1.0];
+}
+
+function autosimEnabled() {
+  return dom.simSupply.checked || dom.simUnlabeled.checked || dom.simRequest.checked
+    || dom.simGrid.checked || dom.simAddRobot.checked || dom.simRemoveRobot.checked
+    || dom.simSpeed.checked || dom.simCapacity.checked || dom.simAddProduct.checked;
+}
+
+function autosimRandomRobot() {
+  const rb = state.robots[Math.floor(Math.random() * state.robots.length)];
+  return rb || null;
+}
+
+function autosimNextProductName() {
+  const known = new Set(state.products.map(p => p.name));
+  const free = SIM_PRODUCT_NAMES.filter(n => !known.has(n));
+  return free.length ? free[Math.floor(Math.random() * free.length)] : null;
+}
+
+// Random product, guaranteed different from `avoid` (spreads materials
+// so supplies/orders don't repeat the same product in a row).
+function autosimPickProduct(avoid) {
+  const list = state.products.length ? state.products.map(p => p.name) : [];
+  if (!list.length) return 'metal';
+  if (list.length < 2) return list[0];
+  const others = list.filter(n => n !== avoid);
+  const pool = others.length ? others : list;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function autosimPickWeighted() {
+  const entries = Object.keys(SIM_WEIGHTS).filter(k => {
+    if (k === 'supply') return dom.simSupply.checked;
+    if (k === 'unlabeled') return dom.simUnlabeled.checked;
+    if (k === 'request') return dom.simRequest.checked;
+    if (k === 'grid') return dom.simGrid.checked;
+    if (k === 'add_robot') return dom.simAddRobot.checked;
+    if (k === 'remove_robot') return dom.simRemoveRobot.checked;
+    if (k === 'speed') return dom.simSpeed.checked;
+    if (k === 'capacity') return dom.simCapacity.checked;
+    if (k === 'add_product') return dom.simAddProduct.checked;
+    return false;
+  });
+  if (entries.length === 0) return null;
+  let total = 0;
+  for (const k of entries) total += SIM_WEIGHTS[k];
+  let roll = Math.random() * total;
+  for (const k of entries) {
+    roll -= SIM_WEIGHTS[k];
+    if (roll < 0) return k;
+  }
+  return entries[entries.length - 1];
+}
+
+function autosimFire() {
+  const kind = autosimPickWeighted();
+  if (!kind) { autosimStop(); return; }
+  let desc = '';
+  if (kind === 'supply') {
+    const qty = 1 + Math.floor(Math.random() * 5);
+    const prod = autosimPickProduct(autosim.lastSupplyProd);
+    autosim.lastSupplyProd = prod;
+    send({ type: 'supply_labeled', data: { product: prod, qty } });
+    desc = `📦 поставка с меткой ${prod} ×${qty}`;
+  } else if (kind === 'unlabeled') {
+    const qty = 1 + Math.floor(Math.random() * 5);
+    send({ type: 'supply_unlabeled', data: { qty } });
+    desc = `📋 поставка без метки ×${qty}`;
+  } else if (kind === 'request') {
+    const qty = 1 + Math.floor(Math.random() * 3);
+    const prod = autosimPickProduct(autosim.lastRequestProd);
+    autosim.lastRequestProd = prod;
+    send({ type: 'request_product', data: { product: prod, qty } });
+    desc = `🛒 заказ ${prod} ×${qty}`;
+  } else if (kind === 'grid') {
+    if (!autosim.base) {
+      const cur = state.gridInfo || { width: 16, height: 12 };
+      autosim.base = { width: cur.width, height: cur.height };
+    }
+    const maxW = Math.min(30, autosim.base.width + 2);
+    const maxH = Math.min(20, autosim.base.height + 1);
+    const w = autosim.gridBig ? autosim.base.width : maxW;
+    const h = autosim.gridBig ? autosim.base.height : maxH;
+    send({ type: 'set_grid_size', data: { width: w, height: h } });
+    autosim.gridBig = !autosim.gridBig;
+    desc = `🗺 склад ${w}×${h} ${autosim.gridBig ? '(расширен)' : '(возвращён)'}`;
+  } else if (kind === 'add_robot') {
+    const prod = autosimPickProduct(autosim.lastRobotProd);
+    autosim.lastRobotProd = prod;
+    send({ type: 'create_robot', data: { product: prod } });
+    desc = `🤖 добавлен РТС (${prod})`;
+  } else if (kind === 'remove_robot') {
+    const rb = autosimRandomRobot();
+    if (rb && state.robots.length > 1) {
+      send({ type: 'remove_robot', data: { robot_id: rb.id } });
+      desc = `🗑 РТС-${rb.id} удалён`;
+    } else {
+      desc = '🗑 удалить нечего';
+    }
+  } else if (kind === 'speed') {
+    const rb = autosimRandomRobot();
+    if (rb) {
+      const speed = Math.round((0.2 + Math.random() * 0.8) * 100) / 100;
+      send({ type: 'set_robot_speed', data: { robot_id: rb.id, speed } });
+      desc = `⚡ РТС-${rb.id} скорость ${speed.toFixed(2)}`;
+    } else {
+      desc = '⚡ нет РТС';
+    }
+  } else if (kind === 'capacity') {
+    const rb = autosimRandomRobot();
+    if (rb) {
+      const cap = 1 + Math.floor(Math.random() * 5);
+      send({ type: 'set_robot_capacity', data: { robot_id: rb.id, capacity: cap } });
+      desc = `🧳 РТС-${rb.id} вместимость ${cap}`;
+    } else {
+      desc = '🧳 нет РТС';
+    }
+  } else if (kind === 'add_product') {
+    const name = autosimNextProductName();
+    if (name) {
+      const color = SIM_PRODUCT_COLORS[Math.floor(Math.random() * SIM_PRODUCT_COLORS.length)];
+      send({ type: 'create_product', data: { name, color: autosimHexToRgba(color) } });
+      desc = `🧪 новый материал ${name}`;
+    } else {
+      desc = '🧪 материалы закончились';
+    }
+  }
+  autosim.fires += 1;
+  autosim.last = desc;
+  updateSimStats();
+}
+
+// Next fire is delayed by a random fraction of the base interval so
+// commands land at irregular moments (some sooner, some later).
+function autosimNextDelay(baseMs) {
+  return baseMs * (0.4 + Math.random() * 1.4);
+}
+
+function autosimStart() {
+  if (!autosimEnabled()) {
+    dom.simStats.textContent = 'Выберите хотя бы одну команду';
+    return;
+  }
+  if (!autosim.base) {
+    const cur = state.gridInfo || { width: 16, height: 12 };
+    autosim.base = { width: cur.width, height: cur.height };
+  }
+  const baseMs = Math.max(2, parseInt(dom.simInterval.value, 10) || 5) * 1000;
+  if (autosim.timer) autosimStop();
+  const tick = () => {
+    autosimFire();
+    autosim.timer = setTimeout(tick, autosimNextDelay(baseMs));
+  };
+  autosim.timer = setTimeout(tick, autosimNextDelay(baseMs));
+  updateSimStats();
+}
+
+function autosimStop() {
+  if (autosim.timer) { clearTimeout(autosim.timer); autosim.timer = null; }
+  updateSimStats();
+}
+
+function updateSimStats() {
+  const on = autosim.timer ? `⏵ работает (каждые ${Math.max(2, parseInt(dom.simInterval.value, 10) || 5)}c)` : '⏹ выкл';
+  let txt = `${on} · команд: ${autosim.fires}`;
+  if (autosim.last) txt += ` · ${autosim.last}`;
+  dom.simStats.textContent = txt;
 }
 
 function scheduleReconnect() {
@@ -1106,6 +1332,27 @@ function setupHandlers() {
     send({ type: 'rebalance', data: {} });
   });
 
+  // Warehouse autopilot
+  dom.simToggle.addEventListener('change', () => {
+    if (dom.simToggle.checked) autosimStart(); else autosimStop();
+  });
+  dom.simInterval.addEventListener('change', () => {
+    if (dom.simToggle.checked) autosimStart();
+  });
+  dom.simFireNow.addEventListener('click', () => {
+    autosimFire();
+    if (!autosim.timer) updateSimStats();
+  });
+  ['simSupply', 'simUnlabeled', 'simRequest', 'simGrid', 'simAddRobot', 'simRemoveRobot', 'simSpeed', 'simCapacity', 'simAddProduct'].forEach(id => {
+    $(`#${id}`).addEventListener('change', () => {
+      if (dom.simToggle.checked && !autosimEnabled()) {
+        dom.simToggle.checked = false;
+        autosimStop();
+      }
+    });
+  });
+  updateSimStats();
+
   // Delegated events for robot controls
   // change stays on range (fires on mouseup on the NEW slider, survives rebuild)
   dom.robotsContent.addEventListener('change', (e) => {
@@ -1144,6 +1391,13 @@ function setupHandlers() {
     const btn = e.target.closest('[data-action="reset"]');
     if (btn) {
       send({ type: 'reset_robot', data: { robot_id: parseInt(btn.dataset.rid) } });
+      return;
+    }
+
+    // Replace battery (reset degradation)
+    const battBtn = e.target.closest('[data-action="battery"]');
+    if (battBtn) {
+      send({ type: 'replace_battery', data: { robot_id: parseInt(battBtn.dataset.rid) } });
       return;
     }
 
@@ -1205,6 +1459,13 @@ function setupHandlers() {
   dom.analyticsModal.addEventListener('click', (e) => {
     if (e.target === dom.analyticsModal) dom.analyticsModal.style.display = 'none';
   });
+
+  // Dashboard page toggle
+  dom.btnDashboard.addEventListener('click', () => {
+    if (dashVisible) hideDashboard();
+    else showDashboard();
+  });
+  dom.btnDashboardBack.addEventListener('click', hideDashboard);
 
   // Resize
   window.addEventListener('resize', () => {
@@ -1416,6 +1677,177 @@ if (analyticsFilterEl) {
     if (_analyticsData) renderAnalytics(_analyticsData);
   });
 }
+
+// ─── Dashboard page ───
+let dashBatteryChart = null;
+let dashMaxChart = null;
+let dashVisible = false;
+
+const DASH_POLL_MS = 5000;
+let dashPollTimer = null;
+
+function showDashboard() {
+  dashVisible = true;
+  dom.mainEl.style.display = 'none';
+  dom.dashboardView.style.display = 'block';
+  dom.btnDashboard.textContent = '🗺 Склад';
+  loadDashboard();
+  if (!dashPollTimer) {
+    dashPollTimer = setInterval(() => { if (dashVisible) loadDashboard(); }, DASH_POLL_MS);
+  }
+}
+
+function hideDashboard() {
+  dashVisible = false;
+  dom.mainEl.style.display = '';
+  dom.dashboardView.style.display = 'none';
+  dom.btnDashboard.textContent = '📊 Дашборд';
+  // Restore 3D viewport size after #main becomes visible again
+  window.dispatchEvent(new Event('resize'));
+}
+
+async function loadDashboard() {
+  try {
+    const res = await fetch('/api/dashboard');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderDashboard(data);
+    dom.dashStatus.textContent = new Date().toLocaleTimeString('ru-RU');
+  } catch (e) {
+    dom.dashStatus.textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+function renderDashboard(data) {
+  const totals = data.totals || {};
+  const robots = data.robots || [];
+  const degradedCount = totals.degraded_count || 0;
+  const criticalCount = totals.critical_count || 0;
+  const stuckCount = totals.stuck_count || 0;
+
+  dom.dashStats.innerHTML = [
+    { label: 'РТС', value: totals.robots, color: 'var(--accent)' },
+    { label: 'Заменено АКБ', value: totals.batteries_replaced, color: 'var(--success)' },
+    { label: 'Деградировано >60%', value: degradedCount, color: 'var(--danger)' },
+    { label: 'Критический заряд', value: criticalCount, color: 'var(--warning)' },
+    { label: 'Застрявшие', value: stuckCount, color: '#ef4444' },
+  ].map(s => `<div class="stat-card" style="border-left-color:${s.color}">
+    <div class="stat-value">${s.value}</div>
+    <div class="stat-label">${s.label}</div>
+  </div>`).join('');
+
+  const warnings = robots.filter(r => r.degraded || r.health === 'critical' || r.stuck);
+  dom.dashWarnings.innerHTML = warnings.length ? warnings.map(r => `
+    <div class="dash-warning ${r.stuck ? 'danger' : (r.degraded ? 'danger' : 'warn')}">
+      <span class="robot-dot" style="background:${r.color}"></span>
+      <b>${r.name}:</b>
+      ${r.stuck
+        ? ' 🚨 застрял — стоит на месте более 30 секунд и не на базовой станции. Автоперепланирование маршрута.'
+        : (r.degraded
+          ? ` аккумулятор сильно деградировал — ёмкость ${r.battery_max}% (деградация ${r.degradation_pct}% > ${data.degraded_threshold_pct}%). Рекомендуется замена АКБ.`
+          : ' низкий заряд батареи — робот направлен на зарядку.')}
+      ${r.charging ? ' ⚡' : ''}
+    </div>`).join('')
+    : '<div class="dash-ok">✅ Все аккумуляторы в норме</div>';
+
+  // ── Charts ──
+  renderDashChart(dom.dashChartBattery, robots, data.history || [], 'battery');
+  renderDashChart(dom.dashChartMax, robots, data.history || [], 'battery_max');
+  renderDashLiveBatteries(robots);
+}
+
+function renderDashLiveBatteries(robots) {
+  const grid = dom.dashLiveGrid;
+  grid.innerHTML = robots.map(r => {
+    const pct = Math.round(r.battery);
+    const maxPct = Math.round(r.battery_max);
+    let barColor = '#22c55e';
+    if (pct <= 20) barColor = '#ef4444';
+    else if (pct <= 40) barColor = '#f59e0b';
+    const healthLabel = r.health === 'critical' ? '⚠' : (r.degraded ? '⚙' : '✓');
+    const healthTitle = r.degraded ? 'деградация ' + r.degradation_pct + '%' : (pct <= 20 ? 'низкий заряд' : 'в норме');
+    return `<div class="battery-card" style="border-left-color:${r.color}">
+      <div class="battery-head">
+        <span class="robot-dot" style="background:${r.color}"></span>
+        <b>${r.name}</b>
+        <span class="battery-health" title="${healthTitle}">${healthLabel}</span>
+        <span class="battery-meta">${r.charging ? '⚡ заряжается' : (r.stuck ? '🚨 застрял' : r.phase)}</span>
+      </div>
+      <div class="battery-bar-wrap">
+        <div class="battery-bar" style="width:${pct}%;background:${barColor}"></div>
+      </div>
+      <div class="battery-nums">
+        <span>${pct}%</span>
+        <span>макс. ${maxPct}%</span>
+        <span>замен: ${r.batteries_replaced || 0}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+function renderDashChart(canvas, robots, history, field) {
+  const times = [...new Set(history.map(h => h.time))].sort();
+  const labels = times.map(iso => {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  });
+  const valuesByRobot = {};
+  for (const h of history) {
+    (valuesByRobot[h.robot_id] = valuesByRobot[h.robot_id] || {})[h.time] = h[field];
+  }
+
+  const datasets = robots.map(r => {
+    const map = valuesByRobot[r.robot_id] || {};
+    return {
+      label: r.name,
+      data: times.map(t => (map[t] !== undefined ? map[t] : null)),
+      borderColor: r.color,
+      backgroundColor: r.color + '40',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.2,
+      spanGaps: true,
+    };
+  });
+
+  const cfg = {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { labels: { color: '#9ca3af', font: { size: 11 } } },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#9ca3af', maxTicksLimit: 12, maxRotation: 0 },
+          grid: { color: '#1f2937' },
+        },
+        y: {
+          min: 0,
+          max: 100,
+          ticks: { color: '#9ca3af' },
+          grid: { color: '#1f2937' },
+        },
+      },
+      interaction: { mode: 'nearest', intersect: false },
+    },
+  };
+
+  const instance = canvas === dom.dashChartBattery ? dashBatteryChart : dashMaxChart;
+  if (instance) {
+    instance.data = cfg.data;
+    instance.options = cfg.options;
+    instance.update();
+  } else if (window.Chart) {
+    const inst = new Chart(canvas.getContext('2d'), cfg);
+    if (canvas === dom.dashChartBattery) dashBatteryChart = inst;
+    else dashMaxChart = inst;
+  }
+}
+
+
 
 // ─── Init ───
 setupHandlers();

@@ -1,0 +1,80 @@
+@startuml
+title MagSim — Тестовая подсистема (компоненты)
+
+skinparam linetype ortho
+
+package "Триггеры запуска" {
+  component "auto_test_runner\n(startup-корутина)\nпервый запуск через 60 с,\nзатем каждые 600 с" as ATR
+  component "GET /api/run-tests\n(полный набор)" as EP1
+  component "GET /api/scenarios\n(список: id, name, expected)" as EP3
+  component "GET /api/run-scenario/{id}\n(один сценарий)" as EP2
+}
+
+package "Запуск (backend/app/main.py)" {
+  component "_run_tests_subprocess(mode, id?)\nsubprocess: python -c …\ncwd = app/tests, таймаут 300 с\n(изолированный процесс)" as SUB
+}
+
+package "Tests (app/tests)" {
+  component "runner.run_everything()\n→ { tests: run_unit_tests(),\n    scenarios: run_all_scenarios() }" as RUN
+  component "run_unit_tests()\nunittest.TestLoader().discover(pattern=test_*.py) →\nTextTestRunner(verbosity=2)\n→ {total, passed, failed, tests[]}" as UNIT
+  component "run_all_scenarios()\nSCENARIOS — 17 функций-сценариев" as SCEN
+
+  package "Юнит-модули (test_*.py, 8 шт.)" {
+    component "test_battery\nTestBatteryDrain" as tb
+    component "test_grid\nTestGrid" as tg
+    component "test_metrics\nTestFleetMetrics" as tm
+    component "test_pathfinding\nTestPathfinding" as tp
+    component "test_robot\nTestRobot" as tr
+    component "test_state\nTestState" as tst
+    component "test_stuck\nTestStuckDetection" as tstk
+    component "test_task_manager\nTestTaskManager" as ttm
+  }
+
+  component "scenarios.py\nSCENARIO_META (1…17):\nname + expected" as META
+}
+
+package "Ядро, используемое сценариями" {
+  component "app: core.state · core.grid · core.pathfinding ·\nentities.robot/uav · simulation.* · metrics · config\n+ _reset() — сброс state/robots/uav/очередей" as FIX
+}
+
+package "Результаты и метрики" {
+  component "record_test_results(payload)\n→ suite=unit / scenario / runner" as REC
+  component "Gauges\nmagsim_tests_last_result{suite,name}\nmagsim_tests_runs_total{suite}\nmagsim_tests_failed_total{suite}\nmagsim_tests_last_run_timestamp{suite}" as GAUGES
+  component "GET /metrics → render_prometheus()\n(text/plain)" as MET
+  component "Prometheus :9090\n(scrape каждые 5 с)" as PROM
+  component "Grafana :3000\n(дашборд health.json — результаты тестов)" as GRAF
+}
+
+ATR --> SUB : каждые 600 с: run_everything()
+EP1 --> SUB : mode=all
+EP2 --> SUB : mode=scenario, id
+EP3 --> META : чтение каталога
+
+SUB --> RUN : JSON payload
+RUN --> UNIT : tests
+RUN --> SCEN : scenarios
+UNIT --> tb : discover
+UNIT --> tg
+UNIT --> tm
+UNIT --> tp
+UNIT --> tr
+UNIT --> tst
+UNIT --> tstk
+UNIT --> ttm
+SCEN --> META : id/name/expected
+SCEN --> FIX : вызовы supply/request/assign/advance/update_uav/rebalance
+META --> FIX : константы (PRODUCTS, SHELF_CAPACITY, STUCK_TICKS, …)
+
+RUN --> REC : результаты (после прогона)
+REC --> GAUGES : suite/name-метки
+GAUGES --> MET : обновление перед scrape
+MET --> PROM : scrape /metrics
+PROM --> GRAF : ряды magsim_tests_* \\nстатусы/тенденции
+
+note bottom
+  Тесты запускаются в изолированном subprocess — живая симуляция при этом не трогается.
+  Каждый сценарий: _reset() → выполнение шагов → проверка expected → {"passed", "detail"}.
+  Ошибки сценария ловятся и возвращаются как passed=false (раннер не падает).
+endnote
+
+@enduml

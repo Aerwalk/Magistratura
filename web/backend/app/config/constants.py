@@ -32,6 +32,22 @@ SHELF_CAPACITY = 5
 AGENT_SPEED = 0.25
 TICK_MS = 50
 
+# ─── Battery model ───
+BATTERY_DRAIN_MOVING = 0.45       # % per second while moving
+BATTERY_DRAIN_IDLE = 0.09         # % per second while idle
+BATTERY_CHARGE_RATE = 1.0         # % per second while charging at home
+BATTERY_LOW = 20.0                # below this the robot returns home to charge
+BATTERY_CHARGE_THRESHOLD = 40.0   # charge at home only when battery is at/below this %; >40% → keep working
+BATTERY_FAIL_MAX = 60.0           # battery_max below this => battery is failing
+BATTERY_CHARGE_HYSTERESIS = 2.0   # % below battery_max before top-up charging starts
+BATTERY_MAX_DEGRADE_PER_FULL_CHARGE = 1.0  # battery_max loss per 100% charged
+BATTERY_DEGRADED_WARNING_PCT = 60  # degradation above this % => battery needs replacement
+BATTERY_TASK_DRAIN = 15.0         # % battery drain per completed task (putaway/retrieve)
+
+# ─── Stuck detection ───
+STUCK_SECONDS = 30                # robot stuck if standing still this many seconds
+STUCK_TICKS = int(STUCK_SECONDS / (TICK_MS / 1000.0))  # ticks at 50 ms = 600
+
 EXIT_CELL = (0, 5)
 INBOUND_CELL = (1, 1)
 INBOUND_PICK_CELL = (2, 1)

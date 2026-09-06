@@ -1,0 +1,25 @@
+@startuml
+title Состояния БВС (UAV) — диаграмма состояний
+
+state "idle" as idle
+state "to_inbound" as ti
+state "scanning" as sc
+state "to_home" as th
+
+[*] --> idle : запуск UAV-агента
+
+idle --> ti : получил cmd:"scan" (qty, inbound)\nиз uav_scan_queue (update_uav)
+ti --> sc : достиг точки над зоной приёмки (высота UAV_SCAN_ALTITUDE)
+sc --> th : scan_ticks израсходованы (30 тиков) → scan_done {qty, product}
+th --> idle : вернулся в UAV_HOME_POS
+
+idle --> idle : new scan cmd приходит только из idle
+ti -[hidden]down--> th
+
+note bottom of sc
+  После scan_done backend вызывает _apply_uav_scan:
+  stock_total[product] += qty, в очередь РТС добавляется putaway,
+  в лог добавляется «БВС распознал товар без метки как ...».
+endnote
+
+@enduml

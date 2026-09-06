@@ -1,0 +1,50 @@
+@startuml
+title Состояния РТС (Robot) — диаграмма состояний
+
+state "idle" as idle
+state "to_pickup_zone" as pickup
+state "to_shelf_for_put" as put
+state "to_shelf_for_pick" as pick
+state "to_exit" as exit
+state "to_home" as home
+state "to_home_charge" as homec
+state "charging" as charge
+state "rebalance_pick" as rpick
+state "rebalance_put" as rput
+
+[*] --> idle : создание (create_robot) / отсутствие задач
+
+idle --> pickup : назначена задача putaway
+idle --> pick : назначена задача retrieve
+idle --> rpick : назначена задача rebalance
+idle --> home  : РТС не на своей станции + нет задач
+idle --> charge: батарея ≤ BATTERY_CHARGE_THRESHOLD (на станции)
+
+pickup --> put : прибыл в зону забора, carry=product, выбранная полка
+put --> put   : остаток carry_qty>0 → выбор следующей полки
+put --> pickup: в очереди ещё есть putaway
+put --> idle  : груз размещён полностью
+put --> idle  : [не смог разместить >100 тиков] → возврат товара на склад
+
+pick --> pick  : partial → следующая полка с тем же продуктом
+pick --> exit  : забрал товар → маршрут к выходу
+exit --> pick  : в очереди ещё есть retrieve-задачи
+exit --> idle  : очередь пуста (находится у выхода)
+
+rpick --> rput : взял 1 ед. (from_shelf) → маршрут к to_shelf
+rput --> idle  : разместил на to_shelf, задача закрыта
+
+idle --> homec : батарея < BATTERY_LOW, РТС вдали от станции
+homec --> charge : прибыл домой → _start_charging()
+home --> charge : прибыл домой → батарея ≤ порог
+home --> idle  : прибыл домой без необходимости зарядки
+charge --> idle : заряд завершён (charge_end) / замена АКБ (replace_battery)
+charge --> charge: идёт зарядка (1%/с, battery_max деградирует)
+
+note bottom of charge
+  Параметры: BATTERY_LOW=20%, BATTERY_CHARGE_THRESHOLD=40%,
+  BATTERY_CHARGE_RATE=1%/с, деградация ≈1% battery_max за полный цикл.
+  Агент уведомляет backend: charging_progress → charge_end.
+endnote
+
+@enduml

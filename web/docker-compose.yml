@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build:
@@ -8,6 +6,63 @@ services:
     container_name: magsim-backend
     ports:
       - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://magsim:magsim@timescale:5432/magsim
+    depends_on:
+      timescale:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  robot-agent:
+    build:
+      context: ./agents/robot
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 5
+    environment:
+      PLANNER_WS: ws://backend:8000/agent/ws/robot
+      OTEL_SERVICE_NAME: magsim-robot-agent
+      TEMPO_OTLP_URL: http://tempo:4318
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  robot-scaler:
+    build:
+      context: ./agents/robot/scaler
+      dockerfile: Dockerfile
+    container_name: magsim-robot-scaler
+    environment:
+      BACKEND_URL: http://backend:8000
+      POLL_INTERVAL: "3"
+      COMPOSE_PROJECT: web
+      COMPOSE_FILE: /compose/docker-compose.yml
+      SERVICE: robot-agent
+      MIN_REPLICAS: "5"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/compose/docker-compose.yml:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  uav-agent:
+    build:
+      context: ./agents/uav
+      dockerfile: Dockerfile
+    container_name: magsim-uav-agent
+    environment:
+      PLANNER_WS: ws://backend:8000/agent/ws/uav
+      OTEL_SERVICE_NAME: magsim-uav-agent
+      TEMPO_OTLP_URL: http://tempo:4318
+    depends_on:
+      - backend
     restart: unless-stopped
     networks:
       - magsim-net
@@ -25,6 +80,119 @@ services:
     networks:
       - magsim-net
 
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    container_name: magsim-timescale
+    environment:
+      POSTGRES_USER: magsim
+      POSTGRES_PASSWORD: magsim
+      POSTGRES_DB: magsim
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - magsim-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U magsim -d magsim"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: magsim-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: magsim
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - timescale
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: magsim-blackbox
+    command: ["--config.file=/etc/blackbox_exporter/config.yml"]
+    volumes:
+      - ./prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: magsim-prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--web.enable-remote-write-receiver"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alertrules.yml:/etc/prometheus/alertrules.yml:ro
+    depends_on:
+      - backend
+      - blackbox-exporter
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: magsim-loki
+    ports:
+      - "3100:3100"
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    container_name: magsim-promtail
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
+  tempo:
+    image: grafana/tempo:2.7.1
+    container_name: magsim-tempo
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+    networks:
+      - magsim-net
+
 networks:
   magsim-net:
     driver: bridge
+
+volumes:
+  timescale-data:
+  loki-data:
+  tempo-data:

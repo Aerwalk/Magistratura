@@ -1,0 +1,99 @@
+@startuml
+title MagSim Web — Архитектура системы (обзор по слоям)
+
+skinparam linetype ortho
+
+package "Слой 1 — Представление (браузер)" as L1 {
+  component "3D-сцена Three.js\n(WebGL + OrbitControls)" as c3d
+  component "UI-панели\n(управление складом, РТС, лог)" as cui
+  component "WebSocket-клиент /ws\n(connectWS / send, 50 мс)" as cws
+  component "Дашборд\n(графики, прогнозы, /api/*)" as cdash
+  cui --> c3d : onStateUpdate() → рендер
+  cws --> cui : state_update
+}
+
+package "Слой 2 — Фронтенд-сервер (magsim-frontend)" as L2 {
+  component "nginx :8080 → :80\nстатика index.html / app.js / style.css" as nginx
+  component "Реверс-прокси\n'/ws' и '/api/*' → backend:8000" as rp
+  nginx --> rp
+}
+
+package "Слой 3 — Бэкенд-приложение (magsim-backend :8000)" as L3 {
+  component "REST API\n/api/stats · export/excel · telemetry · log ·\nhealth · healthz · debug · predictions ·\ndashboard · run-tests · scenarios · products\n+ GET /metrics" as rest
+  component "WebSocket /ws\n(команды UI → движок, broadcast ← движок)" as wsu
+  component "WebSocket /agent/ws/{robot,uav}\n(обмен с агентами)" as wsa
+  component "Цикл симуляции\n(50 мс: advance_robot_phases → assign_tasks →\nupdate_uav → check_rebalance_complete → flush_routes)" as tick
+  component "Модули симуляции\nRobotController · TaskManager · UAVController · Rebalancer" as sim
+  component "Ядро\nWarehouseState (singleton) · Grid + A* ·\nRobot / UAV / BaseUtils" as core
+  component "Инфраструктура\nAgentRegistry · WebSocketManager" as infra
+  component "Адаптер БД asyncpg\n(очереди, writer_loop flush 5 с)" as db
+  component "Prometheus-метрики\n(render_prometheus, record_*)" as mets
+  tick --> sim : вызовы по каждому тику
+  sim --> core : state / grid / pathfinding / robots
+  wsu --> sim : supply_* · request_* · create_* · set_* · rebalance
+  wsu --> core : set_grid_size / cells / shelves
+  wsa --> infra : регистрация / send
+  infra --> wsa
+  tick --> db : emit_telemetry (1 Гц)
+  tick --> mets : record_sim_tick
+  rest --> db : статистика / прогнозы / dashboard
+  rest --> mets : GET /metrics → render_prometheus()
+}
+
+package "Слой 4 — Агенты и масштабирование" as L4 {
+  component "robot-agent ×N реплик\n(эмуляторы физических РТС:\nдвижение, АКБ, зарядка)" as ra
+  component "uav-agent\n(эмулятор БВС: сканирование)" as ua
+  component "robot-scaler\n(опрос /api/debug → docker compose --scale)" as sc
+}
+
+package "Слой 5 — Данные" as L5 {
+  database "TimescaleDB :5432\nrobot_telemetry (гипертаблица) ·\nrobot_logs · robot_charge_sessions ·\ntelemetry_hourly (агрегат)" as ts
+}
+
+package "Слой 6 — Мониторинг" as L6 {
+  component "Prometheus :9090\n(scrape 5 с, alertrules.yml)" as prom
+  component "Blackbox Exporter :9115\n(http_2xx / tcp_connect)" as bb
+  component "Grafana :3000\nbattery · fleet · health · heatmap" as graf
+}
+
+' ─── вертикальное упорядочивание слоёв ───
+L1 -[hidden]down--> L2
+L2 -[hidden]down--> L3
+L3 -[hidden]down--> L4
+L4 -[hidden]down--> L5
+
+' ─── пользователь → фронтенд ───
+cws --> nginx : WS /ws (:8080)
+cdash --> nginx : HTTP GET /api/* (:8080)
+rp --> wsu : прокси '/ws'
+rp --> rest : прокси '/api/*'
+
+' ─── backend ↔ агенты ───
+wsa <--> ra : WS /agent/ws/robot\ncmd: assign/route/start_charging/stop/set_speed/set_home\nmsg: ready/arrived/charge_end/telemetry
+wsa <--> ua : WS /agent/ws/uav\ncmd: scan · msg: scan_done/telemetry
+sc -> rest : GET /api/debug (3 с)
+sc --> ra : docker compose up -d --scale robot-agent=N
+ra --> wsa : подключение новых реплик в пул spare
+
+' ─── данные ───
+db --> ts : asyncpg TCP 5432\nCOPY / executemany
+graf --> ts : источник TimescaleDB (постгрес)
+
+' ─── мониторинг ───
+prom --> rest : scrape GET /metrics (5 с)
+prom --> bb : scrape :9115 /probe
+bb --> nginx : TCP probe :80
+bb --> rest : HTTP probe /healthz
+bb --> ts : TCP probe :5432
+bb --> graf : TCP probe :3000
+graf --> prom : источник Prometheus (uid=prometheus)
+
+legend bottom
+  Протоколы: WS — двусторонний JSON (тик 50 мс), HTTP REST — GET/POST /api/*,
+  asyncpg — поток телеметрии, Prometheus — scrape text/plain, Blackbox — пробы.
+  Слои 1–2 — то, что видит пользователь; слой 3 — вся логика симуляции;
+  слой 4 — «физические» агенты (протокол /agent/ws), слой 5 — долговременные данные,
+  слой 6 — наблюдаемость и оповещения.
+endlegend
+
+@enduml

@@ -1,0 +1,79 @@
+@startuml
+title Поставка без метки — диаграмма последовательности (сквозная)
+
+actor Пользователь as User
+participant "Фронтенд (app.js)" as FE
+participant "Бэкенд[/ws]" as WS
+participant "TaskManager" as TM
+participant "Тик симуляции (50 мс)" as TICK
+participant "WarehouseState" as ST
+participant "UAVController" as UC
+participant "AgentRegistry" as AR
+participant "БВС-агент" as UVA
+participant "РТС-агент" as RA
+participant "Запись БД (asyncpg)" as DB
+participant "TimescaleDB" as TSD
+
+User -> FE : клик «Без метки» (qty=N)
+FE -> WS : WS /ws { "type":"supply_unlabeled", "data":{"qty":N} }
+activate WS
+WS -> TM : supply_unlabeled(N)
+activate TM
+TM -> ST : uav_scan_queue.append(N)
+TM -> ST : event_log.appendleft(...)
+TM --> WS : OK
+deactivate TM
+note over WS : пустой цикл получения сообщений\n(открыт постоянно)
+
+loop каждый тик 50 мс
+  TICK -> TICK : serialize_state() → ws_manager.broadcast(state_update)
+  TICK -> UC : update_uav()
+  activate UC
+  UC -> ST : uav_scan_queue.popleft() → N
+  UC -> AR : send_uav({ "cmd":"scan", "qty":N, "inbound":[...] })
+  deactivate UC
+  AR -> UVA : WS /agent/ws/uav (команда: scan)
+  activate UVA
+  note over UVA : состояния: idle → to_inbound → scanning (30 тиков) → to_home → idle
+  UVA -> AR : scan_done { qty, product }
+  AR -> WS : handle_agent_message(kind="uav")
+  activate WS
+  WS -> ST : _apply_uav_scan(qty, product)\nstock_total[product]+=qty\nrobot_task_queues[product].append(putaway)
+  WS --> WS : событие: «БВС распознал товар без метки…»
+  deactivate WS
+  UVA -> AR : телеметрия (pos/state)
+  AR --> UVA : тик 50 мс
+  deactivate UVA
+end
+
+TICK -> TM : assign_tasks()
+activate TM
+TM -> ST : выбор задачи (putaway) для подходящего РТС
+TM -> RA : маршрут → robot.route, phase=to_pickup_zone (через flush_routes)
+deactivate TM
+TICK -> AR : send_robot(route) → RA
+
+RA -> RA : движение по маршруту (0.25 cell/тик), расход АКБ
+RA -> AR : arrived { pos }
+AR -> WS : update r.pos / r.route=[]
+TICK -> AR : flush_routes() → следующий этап (to_shelf_for_put → полка → размещение)
+
+loop телеметрия ≈1 Гц (каждые 20 тиков)
+  TICK -> DB : emit_telemetry (координаты, фаза, АКБ)
+  activate DB
+  DB -> TSD : push_telemetry → очередь → writer_loop (flush 5 с) → COPY robot_telemetry
+  deactivate DB
+end
+
+loop каждый тик 50 мс
+  TICK -> WS : broadcast(state_update)
+  WS -> FE : JSON state_update (robots/uav/shelves/stats/log)
+  FE -> FE : onStateUpdate() → обновление 3D-сцены и панелей
+end
+
+note over FE, TSD
+  Параллельно Grafana периодически читает robot_telemetry / robot_logs
+  и отображает дашборд (battery.json).
+endnote
+
+@enduml

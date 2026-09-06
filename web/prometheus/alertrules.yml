@@ -1,0 +1,94 @@
+groups:
+  - name: magsim-robots
+    rules:
+      - alert: MagSimRobotStuck
+        expr: magsim_robot_stuck == 1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "РТС {{ $labels.name }} застрял"
+          description: "РТС-{{ $labels.robot_id }} ({{ $labels.name }}) стоит более 30с на точке {{ $labels.pos }} и не находится на базовой станции."
+
+      - alert: MagSimRobotBatteryCritical
+        expr: magsim_robot_battery_percent <= 10
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Критический заряд АКБ {{ $labels.name }}"
+          description: "РТС-{{ $labels.robot_id }} ({{ $labels.name }}) имеет {{ $value | humanize }}% заряда."
+
+      - alert: MagSimRobotBatteryLow
+        expr: magsim_robot_battery_percent <= 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Низкий заряд АКБ {{ $labels.name }}"
+          description: "РТС-{{ $labels.robot_id }} ({{ $labels.name }}) имеет {{ $value | humanize }}% заряда."
+
+      - alert: MagSimBatteryDegraded
+        expr: magsim_robot_battery_degradation_percent >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Деградация АКБ {{ $labels.name }}"
+          description: "РТС-{{ $labels.robot_id }} потерял {{ $value | humanize }}% ёмкости (нужна замена АКБ)."
+
+      - alert: MagSimRobotInactive
+        expr: magsim_robot_speed == 0 and on(robot_id) magsim_robot_phase{phase!="idle", phase!="charging"} == 1
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "РТС {{ $labels.name }} не движется"
+          description: "РТС-{{ $labels.robot_id }} ({{ $labels.name }}) выполняет задачу, но не движется уже более 5 минут."
+
+      - alert: MagSimWarehouseNoCapacity
+        expr: magsim_warehouse_task_queue > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Переполнена очередь задач {{ $labels.product }}"
+          description: "В очереди задач для продукта {{ $labels.product }} более 20 позиций, склад не справляется."
+
+  - name: magsim-stack
+    rules:
+      - alert: MagSimServiceProbeDown
+        expr: probe_success{job="magsim-probes"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ $labels.instance }} недоступен"
+          description: "HTTP-проба на {{ $labels.instance }} не проходит уже более 1 минуты."
+
+      - alert: MagSimSimLoopStalled
+        expr: rate(magsim_health_sim_ticks_total[2m]) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Цикл симуляции остановлен"
+          description: "Счётчик тиков симуляции не растёт — цикл симуляции завис или сервер остановлен."
+
+      - alert: MagSimAgentsDisconnected
+        expr: magsim_health_agents_connected < magsim_health_robots_ready
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Не все агенты подключены"
+          description: "Количество подключённых агентов меньше числа готовых роботов."
+
+      - alert: MagSimTestsFailing
+        expr: magsim_tests_last_result == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Тест/сценарий не проходит: {{ $labels.name }}"
+          description: "Последний прогон теста/сценария {{ $labels.name }} ({{ $labels.suite }}) закончился неудачей."

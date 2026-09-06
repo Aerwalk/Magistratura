@@ -1,0 +1,68 @@
+@startuml
+title MagSim — Каталог тест-сценариев (17 шт., scenarios.py)
+
+left to right direction
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BackgroundColor #FFFFFF
+}
+
+actor "Раннер (runner.run_all_scenarios)" as RUN
+
+rectangle "Базовые операции склада" as C1 {
+  usecase "S1. Поступление маркированного товара\n(в очередь putaway прибавляется qty)" as s1
+  usecase "S2. Извлечение товара со склада\n(запрос → задачи retrieve)" as s2
+  usecase "S3. Поступление немаркированного товара\n(один элемент в uav_scan_queue)" as s3
+  usecase "S4. Планирование маршрута для задачи\n(фаза to_pickup_zone + route)" as s4
+  usecase "S5. Передача сканирования БВС-агенту\n(update_uav → cmd:scan, очередь опустошена)" as s5
+  usecase "S6. Запуск ребалансировки\n(rebalance_active=true, 5 перемещений)" as s6
+}
+
+rectangle "Ограничения склада и ресурсы" as C2 {
+  usecase "S7. Защита от переполнения стеллажа\n(count == SHELF_CAPACITY → приём запрещён)" as s7
+  usecase "S8. Мульти-перенос (capacity > 1)\n(назначено не больше capacity)" as s8
+  usecase "S11. Разряд батареи за задачу\n(-BATTERY_TASK_DRAIN=5% после putaway)" as s11
+}
+
+rectangle "Конфигурирование" as C3 {
+  usecase "S9. Добавление нового продукта\n(add_product → PRODUCTS + PRODUCT_COLORS)" as s9
+  usecase "S10. Редактирование карты\n(add/remove_custom_shelf)" as s10
+}
+
+rectangle "Отказоустойчивость" as C4 {
+  usecase "S13. Обнаружение застревания РТС\n(stationary > STUCK_TICKS, не у дома → алерт;\nу дома без задачи — не алерт)" as s13
+}
+
+rectangle "Наблюдаемость (метрики Prometheus)" as C5 {
+  usecase "S12. Базовые метрики\n(battery, cell_visits, tasks_completed)" as s12
+  usecase "S14. Расширенные метрики парка\n(speed, loaded, phase, stuck, distance, info,\nwarehouse_queue, rebalance)" as s14
+  usecase "S15. Учёт назначенных задач\n(magsim_robot_tasks_assigned_total)" as s15
+  usecase "S16. Метрики здоровья стека\n(magsim_health_*: db/agents/ready/ticks/uptime)" as s16
+  usecase "S17. Метрики результатов тестов\n(magsim_tests_last_result / runs_total)" as s17
+}
+
+RUN --> s1
+RUN --> s2
+RUN --> s3
+RUN --> s4
+RUN --> s5
+RUN --> s6
+RUN --> s7
+RUN --> s8
+RUN --> s9
+RUN --> s10
+RUN --> s11
+RUN --> s12
+RUN --> s13
+RUN --> s14
+RUN --> s15
+RUN --> s16
+RUN --> s17
+
+note right of C5
+  Модуль unittest-тестов (test_*.py, 8 файлов):
+  battery · grid · metrics · pathfinding · robot ·
+  state · stuck · task_manager.
+endnote
+
+@enduml

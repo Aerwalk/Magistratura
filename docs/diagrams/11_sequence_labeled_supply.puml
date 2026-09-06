@@ -1,0 +1,99 @@
+@startuml
+title Поставка с меткой (putaway) — диаграмма последовательности
+
+actor Пользователь as User
+participant "Фронтенд (app.js)" as FE
+participant "WS /ws" as WS
+participant "TaskManager" as TM
+participant "Тик симуляции (50 мс)" as TICK
+participant "WarehouseState" as ST
+participant "Core (grid/pathfinding)" as CORE
+participant "RobotController" as RC
+participant "AgentRegistry" as AR
+participant "РТС-агент" as RA
+participant "Адаптер БД (asyncpg)" as DB
+participant "TimescaleDB" as TSD
+
+User -> FE : выбор материала (product) и количества (qty)\nклик «Поставка»
+FE -> WS : WS /ws { "type":"supply_labeled", "data":{"product":p,"qty":q} }
+activate WS
+WS -> TM : supply_labeled(p, q)
+activate TM
+TM -> ST : для каждой единицы:\nstock_total[p] += 1\nrobot_task_queues[p].append({type:"putaway", source:"labeled"})
+TM -> ST : событие «Поставка с меткой: p, количество q»
+alt нет РТС, способного возить p
+  TM -> ST : событие «⚠ нет РТС, способного возить p!»
+end
+TM --> WS : подтверждение
+deactivate TM
+deactivate WS
+
+loop каждый тик симуляции (50 мс)
+  TICK -> TM : assign_tasks()
+  activate TM
+  TM -> ST : поиск свободного РТС (agent_ready, не заряжается,\nАКБ ≥ BATTERY_LOW, есть p в products)
+  TM -> CORE : _route_to_pickup_zone: astar → зона забора (INBOUND_PICK_CELL)
+  TM -> ST : robot.task = {type:"putaway", product, qty}\nrobot.phase = to_pickup_zone, robot.route = маршрут
+  deactivate TM
+
+  TICK -> AR : flush_routes()
+  AR -> RA : WS /agent/ws/robot { cmd:"route", route }
+  activate RA
+  RA -> RA : движение по маршруту (0.25 ячейка/тик), расход АКБ
+  RA -> AR : arrived { pos }
+  AR -> WS : r.pos = (x,y), r.route = [], wait_ticks = 2
+  deactivate RA
+
+  TICK -> RC : advance_robot_phases()
+  activate RC
+  RC -> ST : _handle_putaway_phase (фаза to_pickup_zone)\nРТС в зоне забора
+  RC -> ST : carry = product, carry_qty = qty, pickup_anim_ticks = 15
+  RC -> ST : _start_putaway_leg: выбор полки\n(скоринг: близость к выходу / спрос / однотипность)
+  alt полка и путь найдены
+    RC -> ST : reserved_put_shelves += полка\nrobot.target_shelf = полка, robot.phase = to_shelf_for_put
+  else пути нет
+    RC -> ST : stuck_ticks += 1 → повторная попытка в следующих тиках\n(>100 тиков → товар возвращается на склад)
+  end
+  deactivate RC
+
+  TICK -> AR : flush_routes() { cmd:"route" } → полка
+  AR -> RA : маршрут
+  activate RA
+  RA -> AR : arrived { pos: полка }
+  deactivate RA
+
+  TICK -> RC : advance_robot_phases()
+  activate RC
+  RC -> ST : размещение: info.count += batch (не больше ёмкости полки)\ncarry_qty -= batch
+  RC -> ST : reserved_put_shelves -= полка
+  alt остались излишки carry_qty > 0
+    RC -> ST : выбор следующей полки (новый цикл размещения)
+  else всё размещено
+    RC -> ST : task = None
+    alt в очереди ещё есть putaway для p
+      RC -> ST : сразу следующая задача: phase = to_pickup_zone
+    else очередь пуста
+      RC -> ST : phase = idle (при необходимости маршрут домой/зарядка)
+    end
+  end
+  deactivate RC
+end
+
+loop телеметрия ≈1 Гц (каждые 20 тиков)
+  TICK -> DB : emit_telemetry (координаты, фаза, АКБ)
+  DB -> TSD : очередь → writer_loop каждые 5 с → COPY robot_telemetry
+end
+
+loop каждый тик 50 мс
+  TICK -> WS : broadcast(state_update)
+  WS -> FE : state_update: полки (count), stock, роботы (фазы), лог
+  FE -> FE : обновление 3D-сцены и панелей
+end
+
+note over FE, TSD
+  Итог: единицы товара перемещаются из очереди поставки на полки склада.
+  Часть пути (маршруты и фазы) вычисляет backend, движение и расход АКБ —
+  физический РТС-агент.
+endnote
+
+@enduml

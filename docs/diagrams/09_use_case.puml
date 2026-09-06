@@ -1,0 +1,62 @@
+@startuml
+title MagSim Web — Диаграмма вариантов использования
+
+left to right direction
+skinparam packageStyle rectangle
+
+actor "Оператор склада" as Operator
+actor "РТС-агент (физ. робот)" as RobotAgent
+actor "БВС-агент (дрон)" as UAVAgent
+actor "Администратор/Инженер" as Admin
+
+rectangle "Фронтенд (браузер)" {
+  usecase "Просмотр 3D-склада\n(сцены, полки, РТС, БВС)" as UC1
+  usecase "Поставка с меткой" as UC2
+  usecase "Поставка без метки\n(распознаёт БВС)" as UC3
+  usecase "Запрос товара (retrieve)" as UC4
+  usecase "Ребалансировка склада" as UC5
+  usecase "Создание РТС / материала" as UC6
+  usecase "Редактирование карты\n(полки, точки, размер)" as UC7
+  usecase "Мониторинг батарей и здоровья РТС\n(мониторинг, прогнозы)" as UC8
+  usecase "Замена АКБ / настройки РТС\n(скорость, ёмкость, продукты, дом)" as UC9
+  usecase "Экспорт отчёта в Excel" as UC10
+  usecase "Запуск автотестов и сценариев" as UC11
+}
+
+rectangle "Бэкенд (FastAPI)" {
+  usecase "Управление задачами\n(очереди putaway/retrieve/rebalance)" as BC1
+  usecase "Поиск пути A*" as BC2
+  usecase "Оркестрация РТС-агентов\n(AgentRegistry)" as BC3
+  usecase "Управление БВС-агентом" as BC4
+  usecase "Сериализация состояния\n(состояние → broadcast)" as BC5
+  usecase "Сбор телеметрии/логов\n→ TimescaleDB" as BC6
+  usecase "Расчёт прогнозов\n(скорость разряда, деградация АКБ)" as BC7
+}
+
+Operator --> UC1
+Operator --> UC2
+Operator --> UC3
+Operator --> UC4
+Operator --> UC5
+Operator --> UC6
+Operator --> UC7
+Operator --> UC8
+Operator --> UC9
+Operator --> UC10
+Admin --> UC8
+Admin --> UC11
+
+UC2 ..> BC1 <<include>>
+UC3 ..> BC1 <<include>>
+UC4 ..> BC1 <<include>>
+UC5 ..> BC1 <<include>>
+UC1 ..> BC5 <<include>>
+
+BC1 ..> BC2 <<include>>
+BC1 ..> BC3 <<include>>
+BC3 ..> RobotAgent
+BC4 ..> UAVAgent
+BC6 ..> Admin : отчёт/логи
+BC7 ..> UC8
+
+@enduml

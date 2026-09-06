@@ -12,6 +12,7 @@
     <button id="menuToggle" aria-label="Меню">☰</button>
     <h1><span>Mag</span>Sim</h1>
     <span id="statusIndicator">Отключено</span>
+    <button id="btnDashboard" aria-label="Дашборд">📊 Дашборд</button>
     <button id="btnTheme" aria-label="Тема">☀</button>
   </header>
 
@@ -54,6 +55,40 @@
             <button class="btn btn-outline btn-sm" id="btnExcel">📊 Excel</button>
             <button class="btn btn-outline btn-sm" id="btnAnalytics">📈 Аналитика</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Warehouse Autopilot -->
+      <div class="panel" id="panel-autosim">
+        <div class="panel-header" data-target="autosim-content">
+          🤖 Автопилот склада <span class="arrow">▼</span>
+        </div>
+        <div class="panel-content" id="autosim-content">
+          <div class="control-row" style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:12px;flex:1;">Имитация реального склада</span>
+            <label class="toggle-wrap">
+              <input type="checkbox" id="simToggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="control-row">
+            <label>Интервал, сек</label>
+            <input type="number" id="simInterval" min="2" max="60" value="5" class="input-sm" style="width:55px">
+            <button class="btn btn-sm btn-outline" id="simFireNow">▶ Команда</button>
+          </div>
+          <div style="font-size:11px;color:var(--text-secondary);margin:4px 0 2px;">Команды:</div>
+          <div id="simChecks" style="display:flex;flex-direction:column;gap:3px;margin-bottom:6px;">
+            <label class="sim-check"><input type="checkbox" id="simSupply" checked> 📦 Поставка с меткой</label>
+            <label class="sim-check"><input type="checkbox" id="simUnlabeled" checked> 📋 Поставка без метки</label>
+            <label class="sim-check"><input type="checkbox" id="simRequest" checked> 🛒 Заказ товара</label>
+            <label class="sim-check"><input type="checkbox" id="simGrid" checked> 🗺 Расширить/вернуть склад</label>
+            <label class="sim-check"><input type="checkbox" id="simAddRobot" checked> 🤖 Добавить РТС</label>
+            <label class="sim-check"><input type="checkbox" id="simRemoveRobot" checked> 🗑 Удалить РТС</label>
+            <label class="sim-check"><input type="checkbox" id="simSpeed" checked> ⚡ Скорость РТС</label>
+            <label class="sim-check"><input type="checkbox" id="simCapacity" checked> 🧳 Вместимость РТС</label>
+            <label class="sim-check"><input type="checkbox" id="simAddProduct" checked> 🧪 Новый материал</label>
+          </div>
+          <div id="simStats" style="font-size:11px;color:var(--text-muted);margin-top:2px;">выкл</div>
         </div>
       </div>
 
@@ -143,6 +178,31 @@
       </div>
 
     </aside>
+  </div>
+
+  <!-- Dashboard View -->
+  <div id="dashboardView" style="display:none;">
+    <div class="dash-toolbar">
+      <button class="btn btn-outline" id="btnDashboardBack">← К складу</button>
+      <h2>📊 Дашборд телеизмерений</h2>
+      <span id="dashStatus" class="dash-status">Загрузка…</span>
+    </div>
+    <div class="dash-stats" id="dashStats"></div>
+    <div class="dash-warnings" id="dashWarnings"></div>
+    <div class="dash-live">
+      <h3>🔋 Состояние аккумуляторов РТС (в реальном времени)</h3>
+      <div class="dash-live-grid" id="dashLiveGrid"></div>
+    </div>
+    <div class="dash-charts">
+      <div class="dash-chart-card">
+        <h3>Заряд батареи, %</h3>
+        <div class="dash-chart-wrap"><canvas id="dashChartBattery"></canvas></div>
+      </div>
+      <div class="dash-chart-card">
+        <h3>Макс. ёмкость (деградация), %</h3>
+        <div class="dash-chart-wrap"><canvas id="dashChartMax"></canvas></div>
+      </div>
+    </div>
   </div>
 
   <div id="mobile-overlay"></div>

@@ -1,10 +1,13 @@
 import random
 
-from config import PRODUCTS
+from config import PRODUCTS, BATTERY_LOW
 from core.state import get_state, get_shelf_max_capacity, get_shelf_allowed_products
-from core.grid import shelf_access_cells, shelf_distance_score, manhattan, all_shelves, get_inbound_pick_cell, get_exit_cell
+from core.grid import shelf_access_cells, shelf_distance_score, get_exit_cell
 from core.pathfinding import astar
 from entities import robots
+from simulation.robot_controller import _get_blocked_cells, _route_to_shelf, _route_to_pickup_zone, _reserve_route
+from metrics import record_task_assigned
+import obs
 
 
 def _has_robot_for(product: str) -> bool:
@@ -112,20 +115,18 @@ def _choose_best_pick_shelf(product: str) -> tuple:
     return min(candidates, key=shelf_distance_score)
 
 
-def _get_blocked_cells(exclude_robot=None) -> set:
-    blocked = set()
-    for r in robots:
-        if r != exclude_robot and r.current_target is None:
-            blocked.add(r.pos)
-    return blocked
-
-
 def assign_tasks() -> None:
     state = get_state()
     for robot in robots:
+        if not robot.agent_ready:
+            continue
         if robot.task is not None:
             continue
         if robot.is_active():
+            continue
+        if robot.phase == "charging":
+            continue
+        if robot.battery < BATTERY_LOW:
             continue
         queue = _pick_robot_queue(robot, state)
         if queue is None:
@@ -135,6 +136,7 @@ def assign_tasks() -> None:
                 if route:
                     robot.route = route
                     robot.phase = "to_home"
+                    _reserve_route(route)
             continue
         task = queue[0]
         if task["type"] == "rebalance":
@@ -148,13 +150,16 @@ def assign_tasks() -> None:
                 queue.popleft()
                 continue
             blocked = _get_blocked_cells(exclude_robot=robot)
-            access = min(accesses, key=lambda c: manhattan(robot.pos, c))
-            route = astar(robot.pos, access, blocked=blocked)
+            route = _route_to_shelf(robot, from_shelf, blocked)
             if route:
                 robot.task = queue.popleft()
                 robot.phase = "rebalance_pick"
                 robot.route = route
                 robot.target_shelf = from_shelf
+                with obs.span("task.assigned", robot_id=robot.id, type="rebalance",
+                              product=task["product"], from_shelf=str(from_shelf)):
+                    record_task_assigned(robot.id, "rebalance")
+                _reserve_route(route)
             else:
                 state.event_log.appendleft(
                     f"⚠ {robot.name}: нет пути к полке {from_shelf} для ребалансировки!"
@@ -162,21 +167,26 @@ def assign_tasks() -> None:
             continue
         blocked = _get_blocked_cells(exclude_robot=robot)
         if task["type"] == "putaway":
-            route = astar(robot.pos, get_inbound_pick_cell(), blocked=blocked)
-            if len(route) == 0:
+            route = _route_to_pickup_zone(robot, blocked)
+            if not route:
                 state.event_log.appendleft(
                     f"⚠ {robot.name}: нет пути к зоне забора!"
                 )
                 continue
+            queue.popleft()
             qty = 1
             while qty < robot.capacity and len(queue) > 0 and queue[0]["type"] == "putaway":
                 queue.popleft()
                 qty += 1
-            robot.task = {"type": "putaway", "product": robot.product, "qty": qty}
-            robot.phase = "to_pickup_zone"
-            robot.route = route
-            robot.carry = None
-            robot.target_shelf = None
+            with obs.span("task.assigned", robot_id=robot.id, type="putaway",
+                          product=robot.product, qty=qty, source="queue"):
+                robot.task = {"type": "putaway", "product": robot.product, "qty": qty}
+                robot.phase = "to_pickup_zone"
+                robot.route = route
+                record_task_assigned(robot.id, "putaway")
+                robot.carry = None
+                robot.target_shelf = None
+            _reserve_route(route)
         elif task["type"] == "retrieve":
             shelf = _choose_best_pick_shelf(robot.product)
             if shelf is None:
@@ -195,11 +205,11 @@ def assign_tasks() -> None:
             while qty < robot.capacity and len(queue) > 0 and queue[0]["type"] == "retrieve" and queue[0]["product"] == robot.product:
                 queue.popleft()
                 qty += 1
-            access = min(accesses, key=lambda c: manhattan(robot.pos, c))
             blocked_for_route = _get_blocked_cells(exclude_robot=robot)
             ex = get_exit_cell()
-            route1 = astar(robot.pos, access, blocked=blocked_for_route)
-            route2 = astar(access, ex, blocked=blocked_for_route)
+            route1 = _route_to_shelf(robot, shelf, blocked_for_route)
+            access_used = route1[-1] if route1 else None
+            route2 = astar(access_used, ex, blocked=blocked_for_route) if access_used else []
             route3 = astar(ex, robot.home, blocked=blocked_for_route)
             if len(route1) == 0:
                 state.reserved_pick_shelves.discard(shelf)
@@ -212,10 +222,14 @@ def assign_tasks() -> None:
             robot.task = {"type": "retrieve", "product": robot.product, "qty": qty, "shelf": shelf}
             robot.phase = "to_shelf_for_pick"
             robot.route = route1
+            with obs.span("task.assigned", robot_id=robot.id, type="retrieve",
+                          product=robot.product, qty=qty, shelf=str(shelf)):
+                record_task_assigned(robot.id, "retrieve")
             robot.next_route_after_phase = route2
             robot.final_route_after_exit = route3
             robot.carry = None
             robot.target_shelf = shelf
+            _reserve_route(route1)
 
 
 def _pick_robot_queue(robot, state):

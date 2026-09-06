@@ -1,0 +1,231 @@
+{
+  "uid": "magsim-logs",
+  "title": "MagSim — Логи склада (TimescaleDB)",
+  "tags": ["magsim", "logs"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Логов за период",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__time(time), count(*) AS n FROM robot_logs WHERE $__timeFilter(time) GROUP BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Предупреждения (⚠)",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__time(time), count(*) AS n FROM robot_logs WHERE $__timeFilter(time) AND level = 'warning' GROUP BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Событий зарядки",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__time(time), count(*) AS n FROM robot_logs WHERE $__timeFilter(time) AND event IN ('charging_start', 'charging_end', 'charging_progress') GROUP BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Замен АКБ",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__time(time), count(*) AS n FROM robot_logs WHERE $__timeFilter(time) AND event = 'battery_replaced' GROUP BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Застреваний РТС",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__time(time), count(*) AS n FROM robot_logs WHERE $__timeFilter(time) AND (event = 'robot_stuck' OR event LIKE '%застрял%') GROUP BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Активность логов по уровню (info / warning)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "fillOpacity": 30, "lineWidth": 2, "drawStyle": "bars", "barAlignment": "middle", "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(time, $__interval) AS time, count(*) AS n FROM robot_logs WHERE $__timeFilter(time) AND level = 'info' GROUP BY 1 ORDER BY 1",
+          "legendFormat": "info",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(time, $__interval) AS time, count(*) AS n FROM robot_logs WHERE $__timeFilter(time) AND level = 'warning' GROUP BY 1 ORDER BY 1",
+          "legendFormat": "warning",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "События по типу (за последний час)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "fillOpacity": 25, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(time, $__interval) AS time, CASE WHEN event LIKE '%застрял%' OR event = 'robot_stuck' THEN 'stuck' WHEN event LIKE '%заряд%' OR event IN ('charging_start','charging_end','charging_progress') THEN 'charging' WHEN event = 'battery_replaced' OR event LIKE '%замен%' THEN 'battery' WHEN event LIKE 'Поставка%' THEN 'supply' WHEN event LIKE 'Запрос%' OR event LIKE '%заказ%' THEN 'order' WHEN event LIKE '%создан%' OR event LIKE '%добавлен%' OR event LIKE '%выведен из парка%' THEN 'robot' WHEN event LIKE '%переименован%' OR event LIKE '%новая станция%' THEN 'config' ELSE 'other' END AS category, count(*) AS n FROM robot_logs WHERE $__timeFilter(time) GROUP BY 1, 2 ORDER BY 1",
+          "legendFormat": "{{category}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Последние 100 записей лога",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "level" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "color", "value": { "mode": "thresholds", "thresholds": { "mode": "absolute", "steps": [
+                { "color": "blue", "value": null },
+                { "color": "orange", "value": 2 }
+              ] } } }
+            ] }
+        ]
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "table",
+          "rawSql": "SELECT to_char(time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS time, COALESCE(robot_id::text, '—') AS robot_id, level, event FROM robot_logs WHERE $__timeFilter(time) ORDER BY time DESC LIMIT 100",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+@startuml
+title Запрос товара (retrieve) — диаграмма последовательности
+
+actor Пользователь as User
+participant "Фронтенд (app.js)" as FE
+participant "WS /ws" as WS
+participant "TaskManager" as TM
+participant "WarehouseState" as ST
+participant "Core (grid/pathfinding)" as CORE
+participant "RobotController" as RC
+participant "AgentRegistry" as AR
+participant "РТС-агент" as RA
+participant "TimescaleDB" as TSD
+
+User -> FE : клик «Запрос» (product, qty)
+FE -> WS : { "type":"request_product", "data":{product, qty} }
+WS -> TM : request_product(product, qty)
+activate TM
+TM -> ST : проверка наличия (сумма по shelf_state)
+alt товара на полках нет
+  TM -> ST : событие «Товар недоступен на полках»
+else товар есть (qty ≤ available)
+  TM -> ST : demand[product] += qty
+  TM -> ST : robot_task_queues[product].append(retrieve×qty)
+end
+deactivate TM
+
+loop каждый тик 50 мс
+  WS -> TM : assign_tasks() [для каждого РТС]
+  activate TM
+  TM -> ST : найти свободного/подходящего РТС\n(agent_ready, не заряжается, АКБ≥LOW)
+  TM -> ST : _choose_best_pick_shelf(product) → shelf
+  TM -> CORE : shelf_access_cells + astar (to shelf → exit → home)
+  TM -> ST : reserve shelf; robot.task={retrieve,qty,shelf}
+  TM -> ST : robot.phase=to_shelf_for_pick, route=route1
+  deactivate TM
+
+  WS -> AR : flush_routes() → send_robot(route) { cmd:"route" }
+  AR -> RA : WS /agent/ws/robot
+  activate RA
+  RA -> RA : движение ячейка-за-ячейкой (0.25/тик), базовый расход АКБ
+  RA -> AR : arrived { pos }
+  AR -> WS : r.pos=(x,y), route=[], wait_ticks=2
+  deactivate RA
+
+  WS -> RC : advance_robot_phases()
+  activate RC
+  RC -> ST : _handle_retrieve_phase: снять take с полки\ncount-=take, carry+qty, retrieved_total+=qty
+  RC -> ST : reserve_pick_shelves.discard(shelf)
+  RC -> CORE : astar(pos → exit) / astar(exit → home)
+  RC -> ST : robot.phase=to_exit, next/final routes
+  deactivate RC
+
+  WS -> AR : flush_routes() → send_robot(route) (to exit)
+  AR -> RA : { cmd:"route" }
+  RA -> AR : arrived { pos: exit }
+  AR -> WS : r.pos=exit
+  WS -> ST : delivered_total[product]+=carry_qty\n(«РТС доставил ... к выходу»)
+
+  alt ещё есть retrieve-задачи
+    WS -> RC : планирование следующей полки
+  else очередь пуста
+    WS -> RC : маршрут домой (phase=idle/to_home)
+  end
+end
+
+opt АКБ < 20% в пути
+  WS -> RC : phase=to_home_charge → маршрут домой
+  WS -> AR : send_robot(start_charging)
+  AR -> RA : { cmd:"start_charging" }
+  RA -> RA : зарядка (1%/с), деградация battery_max
+  RA -> AR : charge_end { battery_to, battery_max_after }
+  AR -> WS : push_log(charging_end) + push_charge_session
+  WS -> TSD : INSERT robot_logs / robot_charge_sessions (writer_loop)
+end
+
+loop каждый тик 50 мс
+  WS -> FE : broadcast(state_update): robots (battery, phase), спрос, выдачи
+  FE -> FE : обновление 3D/панелей
+end
+
+@enduml

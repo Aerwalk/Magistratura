@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MagSim — цифровой двойник складской логистики</title>
+<style>
+  :root{
+    --bg:#0b2438; --ink:#122033; --muted:#5b6b7c;
+    --accent:#19a974; --accent2:#ff6b4a; --line:#e3e9f0;
+    --card:#f5f8fb; --white:#ffffff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{
+    font-family:"Segoe UI","PT Sans",system-ui,-apple-system,Arial,sans-serif;
+    background:#0a1f32; color:var(--ink); overflow:hidden;
+  }
+  .deck{position:fixed; inset:0;}
+  .slide{
+    position:absolute; inset:0; background:var(--white);
+    transform:translateX(100%); transition:transform .55s cubic-bezier(.77,0,.18,1);
+    overflow:hidden; overflow-y:auto;
+    display:flex; flex-direction:column;
+  }
+  .slide.active{transform:translateX(0);}
+  .slide.before{transform:translateX(-100%);}
+  .wrap{width:min(1180px,92vw); margin:auto; padding:52px 24px 90px; flex:1;}
+  h1{font-size:clamp(34px,4.5vw,58px); line-height:1.06; letter-spacing:-.5px;}
+  h2{font-size:clamp(26px,3.2vw,40px); letter-spacing:-.3px; margin-bottom:6px;}
+  h3{font-size:20px; margin-bottom:8px;}
+  .kicker{
+    display:inline-block; text-transform:uppercase; letter-spacing:3px;
+    font-size:13px; font-weight:700; color:var(--accent); margin-bottom:14px;
+  }
+  .lead{color:var(--muted); font-size:clamp(16px,1.6vw,20px); max-width:880px; line-height:1.55;}
+  .grid{display:grid; gap:18px;}
+  .g2{grid-template-columns:repeat(2,1fr);}
+  .g4{grid-template-columns:repeat(4,1fr);}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:20px 20px 18px; position:relative;
+  }
+  .card b{display:block; font-size:16.5px; margin-bottom:8px; color:var(--bg);}
+  .card p{color:var(--muted); font-size:14.5px; line-height:1.5;}
+  .badge{
+    width:34px; height:34px; border-radius:9px; color:#fff; font-weight:700;
+    display:flex; align-items:center; justify-content:center; font-size:16px; margin-bottom:12px;
+  }
+  .b-green{background:var(--accent);}
+  .b-orange{background:var(--accent2);}
+  .b-blue{background:#2563eb;}
+  .b-purple{background:#7c3aed;}
+  /* Титул */
+  .hero{background:radial-gradient(1200px 700px at 85% -10%, #135a8c 0%, transparent 60%), var(--bg); color:#fff;}
+  .hero .wrap{padding-top:12vh;}
+  .hero h1{font-size:clamp(40px,6vw,78px);}
+  .hero .sub{font-size:clamp(18px,2.2vw,26px); color:#cfe0ee; max-width:900px; line-height:1.5; margin-top:18px;}
+  .hero .tag{color:#8fb7d4; font-size:15px; letter-spacing:.5px; margin-top:26px; line-height:1.6; max-width:820px;}
+  .hero .rel{display:flex; gap:34px; margin-top:52px; flex-wrap:wrap;}
+  .hero .rel div{font-size:29px; font-weight:800; color:#ffd54a;}
+  .hero .rel span{display:block; font-size:13px; font-weight:400; color:#b9cfe0; max-width:180px; line-height:1.35; margin-top:4px;}
+  /* Таблица метрик */
+  table{width:100%; border-collapse:collapse; font-size:14.5px; margin-top:8px;}
+  th,td{text-align:left; padding:12px 14px; border-bottom:1px solid var(--line); vertical-align:top;}
+  thead th{background:var(--bg); color:#fff; font-size:13.5px; letter-spacing:.4px;}
+  thead th:first-child{border-radius:10px 0 0 0;}
+  thead th:last-child{border-radius:0 10px 0 0;}
+  td.n{font-weight:700; color:var(--bg); width:26%;}
+  td.a{color:var(--muted); width:35%;}
+  td.b{color:#0b7a56; font-weight:600;}
+  tr:last-child td{border-bottom:none;}
+  /* Числа эффекта */
+  figure{display:flex; flex-wrap:wrap; gap:22px; margin-top:26px;}
+  .kpi{
+    flex:1 1 180px; background:var(--card); border:1px solid var(--line);
+    border-radius:14px; padding:22px 20px;
+  }
+  .kpi .num{font-size:38px; font-weight:800; color:var(--accent); letter-spacing:-1px;}
+  .kpi .lbl{color:var(--muted); font-size:14px; margin-top:6px; line-height:1.4;}
+  .kpi.sub .num{color:var(--bg);}
+  /* Шаги внедрения */
+  .steps{display:flex; gap:16px; margin-top:26px; flex-wrap:wrap;}
+  .step{flex:1 1 200px; border-top:4px solid var(--accent); border-radius:0 0 12px 12px; background:var(--card); padding:18px;}
+  .step .sno{font-size:13px; font-weight:800; color:var(--accent); letter-spacing:2px;}
+  .step b{display:block; margin:10px 0 6px; font-size:16px;}
+  .step p{color:var(--muted); font-size:13.5px; line-height:1.5;}
+  /* Списки */
+  ul.ticks{list-style:none; margin-top:6px;}
+  ul.ticks li{position:relative; padding:9px 0 9px 30px; color:#33414f; font-size:16px; line-height:1.45;}
+  ul.ticks li:before{
+    content:""; position:absolute; left:2px; top:15px; width:15px; height:9px;
+    border-left:3px solid var(--accent); border-bottom:3px solid var(--accent);
+    transform:rotate(-45deg);
+  }
+  /* Изображения */
+  .imgbox{display:flex; align-items:flex-start; gap:20px;}
+  .imgbox img{max-width:58%; border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 30px rgba(11,36,56,.12);}
+  .imgbox .aside{flex:1;}
+  /* Навигация */
+  nav{
+    position:fixed; left:0; right:0; bottom:20px; display:flex; justify-content:center;
+    gap:18px; align-items:center; z-index:50;
+  }
+  .sep{position:fixed; top:0; left:0; height:4px; width:0; background:linear-gradient(90deg,var(--accent),var(--accent2)); z-index:60; transition:width .3s;}
+  nav button{
+    background:rgba(11,36,56,.82); color:#fff; border:none; border-radius:999px;
+    width:42px; height:42px; font-size:17px; cursor:pointer;
+  }
+  nav button:hover{background:var(--bg);}
+  .dots{display:flex; gap:6px;}
+  .dot{width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,.35); cursor:pointer;}
+  .dot.on{background:#ffd54a; width:20px; border-radius:6px;}
+  .count{color:#d7e4ef; font-size:13px; letter-spacing:1px; min-width:52px; text-align:center;}
+  @media (max-width:1120px){ .g3{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:820px){ .g4,.g2,.g3{grid-template-columns:1fr;} .imgbox{flex-direction:column;} .imgbox img{max-width:100%;} }
+  @media print{
+    body{overflow:visible; background:#fff;} .slide{position:relative; transform:none; page-break-after:always; height:100vh;}
+    nav{display:none;}
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+
+<section class="slide hero">
+  <div class="wrap">
+    <div class="kicker" style="color:#ffd54a;">Цифровой двойник склада</div>
+    <h1>MagSim</h1>
+    <div class="sub">Симуляция управления парком роботов-транспортировщиков (РТС) и беспилотного сканера (БВС) на виртуальном складе</div>
+    <div class="tag">Проверьте автоматизацию и её эффект — до покупки реального оборудования. Прозрачные метрики, мониторинг 24/7 и отчётность для обоснования инвестиций.</div>
+    <div class="rel">
+      <div>30%<span>потенциальное сокращение маршрутов комплектации</span></div>
+      <div>~30 c<span>детекция застрявшего робота вместо часов ожидания</span></div>
+      <div>24/7<span>мониторинг флота, батарей и сервисов</span></div>
+      <div>2 нед.<span>демонстрация на сценарии заказчика</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Актуальность</div>
+    <h2>Почему автоматизация склада — вопрос «сейчас»</h2>
+    <p class="lead">Склады работают на пределе: растёт поток заказов, дорожает персонал, а ошибки планирования обходятся дорого.</p>
+    <div class="grid g4" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">1</div><b>Рост нагрузки</b><p>Онлайн-заказы растут каждый год — складам нужно быстрее комплектовать и отгружать больше позиций.</p></div>
+      <div class="card"><div class="badge b-blue">2</div><b>Кадровый дефицит</b><p>Подбор и удержание персонала дорожают; автоматизация перестаёт быть опцией и становится вопросом экономики.</p></div>
+      <div class="card"><div class="badge b-orange">3</div><b>Высокий риск внедрения</b><p>Запуск роботов — крупные инвестиции. Ошибка планирования даёт простой оборудования и убытки.</p></div>
+      <div class="card"><div class="badge b-purple">4</div><b>Нужна проверка</b><p>Безопасный способ оценить алгоритмы и KPI автоматизации до покупки «железа» — цифровой двойник.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Проблема заказчика</div>
+    <h2>Что мешает сегодня</h2>
+    <p class="lead">Без цифрового двойника эффект автоматизации непредсказуем, а процессы «не видны».</p>
+    <div class="grid g2" style="margin-top:30px;">
+      <div class="card"><div class="badge b-orange">!</div><b>Товар не там, где нужно</b><p>Частозапрашиваемые позиции лежат в глубине склада — каждый заказ занимает больше времени.</p></div>
+      <div class="card"><div class="badge b-orange">!</div><b>Простои и застревания</b><p>Застрявший робот обнаруживают вручную, иногда через часы — склад «стоит».</p></div>
+      <div class="card"><div class="badge b-orange">!</div><b>Внезапный отказ батарей</b><p>АКБ выходят из строя без предупреждения → внеплановые простой и замена дороже плановой.</p></div>
+      <div class="card"><div class="badge b-orange">!</div><b>Нет прозрачной аналитики</b><p>Отсутствуют объективные цифры: скорость выдачи, загрузка роботов, окупаемость автоматизации.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Решение</div>
+    <h2>MagSim — цифровой двойник склада</h2>
+    <p class="lead">Живая веб-модель склада, где RTS и БВС выполняют реальные бизнес-операции, а каждая операция измеряется метриками.</p>
+    <div class="grid g2" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">Р</div><b>Парк специализированных РТС</b><p>5 роботов по типам товара (металл, пластик, электроника, дерево, стекло). Задачи: размещение, выдача, ребалансировка.</p></div>
+      <div class="card"><div class="badge b-blue">Б</div><b>БВС-сканирование без меток</b><p>Беспилотник распознаёт поставки без маркировки, определяет тип товара и направляет его на нужные полки.</p></div>
+      <div class="card"><div class="badge b-purple">A</div><b>Умная диспетчеризация</b><p>A* маршрутизация, автономное назначение задач, батчинг до 5 единиц за рейс, обход препятствий и конфликтов.</p></div>
+      <div class="card"><div class="badge b-orange">И</div><b>Авто-ребалансировка</b><p>Частозапрашиваемые товары автоматически подтягиваются ближе к зоне выдачи — короче каждый маршрут комплектации.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Бизнес-сценарии</div>
+    <h2>Как работают ключевые операции</h2>
+    <div class="grid g2" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">1</div><b>Поставка с меткой</b><p>Товар с известным типом автоматически попадает в очередь: робот забирает его в зоне приёмки и размещает на полку по приоритету спроса.</p></div>
+      <div class="card"><div class="badge b-blue">2</div><b>Поставка без метки</b><p>БВС проводит сканирование в зоне приёмки, определяет тип товара, пополняет запас на полках — без ручного разбора.</p></div>
+      <div class="card"><div class="badge b-purple">3</div><b>Заказ клиента</b><p>Робот находит ближайшую полку с товаром, забирает и доставляет к выходу. Остаток компенсируется, склад сам пополняет запасы.</p></div>
+      <div class="card"><div class="badge b-orange">4</div><b>Ребалансировка</b><p>Периодическая оптимизация: товары с высоким спросом перемещаются ближе к выходу — сокращается средний маршрут выдачи.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Метрики бизнеса</div>
+    <h2>Что конкретно улучшает система</h2>
+    <p class="lead">Каждая метрика измерима в симуляции и переносится на реальный склад после внедрения.</p>
+    <table>
+      <thead><tr><th>Показатель</th><th>Традиционный склад</th><th>С MagSim</th></tr></thead>
+      <tbody>
+        <tr><td class="n">Скорость выдачи заказа</td><td class="a">Товар в глубине склада, маршрут сотрудника «на глаз»</td><td class="b">A* + товары у выхода после ребалансировки</td></tr>
+        <tr><td class="n">Простои роботов</td><td class="a">Застревание замечают вручную, реакция — часы</td><td class="b">Автодетекция за ~30 секунд и восстановление движения</td></tr>
+        <tr><td class="n">Срок службы АКБ</td><td class="a">Замена по отказу, внеплановый простой</td><td class="b">Контроль деградации, прогноз ресурса, замена по состоянию</td></tr>
+        <tr><td class="n">Пропускная способность</td><td class="a">Доставка 1 позиции за рейс</td><td class="b">Батчинг — до ёмкости робота за один рейс</td></tr>
+        <tr><td class="n">Надёжность инфраструктуры</td><td class="a">Ручной контроль сервисов и оборудования</td><td class="b">Мониторинг 24/7, алерты, автоматические проверки</td></tr>
+        <tr><td class="n">Отчётность для заказчика</td><td class="a">Сводный Excel вручную</td><td class="b">Автоматические дашборды и выгрузка отчётов</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Ключевые метрики</div>
+    <h2>Система измеряет всё — непрерывно</h2>
+    <p class="lead">Каждая операция фиксируется и попадает в дашборды: состояние флота видно в реальном времени и образует базу для отчётов заказчику.</p>
+    <div class="grid g3" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">АКБ</div><b>Заряд и деградация батарей</b><p>Каждый робот: текущий заряд, скорость разряда, прогноз остаточного ресурса и время до подзарядки.</p></div>
+      <div class="card"><div class="badge b-blue">СЛА</div><b>Время выдачи заказа</b><p>Ключевой SLA: от запроса клиента до доставки товара к выходу — среднее и по каждой задаче.</p></div>
+      <div class="card"><div class="badge b-green">ЗАД</div><b>Выполненные задачи</b><p>Размещение, выдача и ребалансировка за период; производительность парка по сменам и суткам.</p></div>
+      <div class="card"><div class="badge b-blue">ПУТЬ</div><b>Скорость и дистанция</b><p>Движение каждого РТС и контроль маршрута: видны «лишние» километры и узкие места полок.</p></div>
+      <div class="card"><div class="badge b-orange">ПРО</div><b>Застревания и восстановление</b><p>Число инцидентов и время реакции: детекция ~30 секунд, робот самостоятельно продолжает маршрут.</p></div>
+      <div class="card"><div class="badge b-purple">ЗАГ</div><b>Загрузка и готовность флота</b><p>Насколько равномерно заняты роботы и сколько единиц техники доступно в каждый момент времени.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Экономический эффект</div>
+    <h2>Куда конвертируются метрики</h2>
+    <figure>
+      <div class="kpi"><div class="num">−30%</div><div class="lbl">средний маршрут комплектации за счёт ребалансировки по спросу</div></div>
+      <div class="kpi"><div class="num">×N</div><div class="lbl">выдача за рейс благодаря батчингу задач</div></div>
+      <div class="kpi"><div class="num">мин.</div><div class="lbl">реакция на застревание робота вместо часов простоя</div></div>
+      <div class="kpi"><div class="num">Р</div><div class="lbl">снижение затрат на АКБ — предиктивная замена по состоянию</div></div>
+      <div class="kpi sub"><div class="num">ROI</div><div class="lbl">прозрачный расчёт окупаемости автоматизации до покупки железа</div></div>
+      <div class="kpi sub"><div class="num">0</div><div class="lbl">риск остановки производственного склада при обучении сотрудников</div></div>
+    </figure>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Человеческий фактор</div>
+    <h2>Меньше ручного труда — роботы работают 24/7</h2>
+    <p class="lead">Автоматизация убирает зависимость склада от смен, усталости и личного опыта сотрудников.</p>
+    <div class="grid g2" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">24</div><b>Непрерывная работа 24/7</b><p>Парк работает всю неделю — 168 часов: нет смен, обедов, больничных, выходных и праздничных простоев.</p></div>
+      <div class="card"><div class="badge b-blue">7</div><b>Стабильное качество без усталости</b><p>Операция в 03:00 и в обед выполняется одинаково точно — скорость и точность не зависят от часа работы.</p></div>
+      <div class="card"><div class="badge b-green">OK</div><b>Стандартный процесс</b><p>Алгоритм выполняет каждую операцию одинаково, без «личных приёмов» сотрудника. Новичков не нужно долго обучать.</p></div>
+      <div class="card"><div class="badge b-orange">М</div><b>Меньше ошибок учёта и тяжёлого труда</b><p>БВС проводит инвентаризацию вместо ручного пересчёта, роботы переносят грузы — меньше ошибок и нагрузки на людей.</p></div>
+    </div>
+    <figure style="margin-top:26px;">
+      <div class="kpi"><div class="num">168 ч</div><div class="lbl">непрерывной работы парка в неделю</div></div>
+      <div class="kpi"><div class="num">24/7</div><div class="lbl">без перерывов, смен и выходных</div></div>
+      <div class="kpi"><div class="num">0</div><div class="lbl">зависимость от опыта и «личных приёмов» сотрудника</div></div>
+    </figure>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Надёжность</div>
+    <h2>Прозрачность и работа 24/7</h2>
+    <p class="lead">Система сама следит за флотом и инфраструктурой и сообщает о проблемах мгновенно.</p>
+    <div class="grid g2" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">M</div><b>Дашборды Grafana</b><p>4 панели: здоровье батарей, состояние флота (скорость, загрузка, задачи), здоровье стека и тепловая карта интенсивности движения.</p></div>
+      <div class="card"><div class="badge b-orange">A</div><b>Автоматические алерты</b><p>Застрявший робот, критический заряд АКБ, деградация батареи, остановка цикла симуляции, недоступность сервиса, падение тестов — оповещение без участия человека.</p></div>
+      <div class="card"><div class="badge b-blue">P</div><b>Постоянный контроль</b><p>Проверки доступности всех сервисов (HTTP/TCP-пробы) — бэкенд, фронтенд, база данных, панели мониторинга.</p></div>
+      <div class="card"><div class="badge b-purple">T</div><b>История и прогнозы</b><p>Телеметрия хранится в TimescaleDB: видно динамику АКБ, а прогнозы разряда помогают планировать обслуживание.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Качество</div>
+    <h2>Доверие к системе — через автотесты</h2>
+    <p class="lead">17 бизнес-сценариев и 8 модулей юнит-тестов проверяют ключевые процессы системы.</p>
+    <div class="grid g2" style="margin-top:30px;">
+      <div class="card"><div class="badge b-green">17</div><b>Бизнес-сценариев</b><p>Поставки с меткой и без, выдача заказов, маршрутизация, ребалансировка, защита от переполнения полок, батарея, застревание, метрики Prometheus.</p></div>
+      <div class="card"><div class="badge b-blue">8</div><b>Модулей юнит-тестов</b><p>Батарея, сетка склада, поиск пути, метрики, робот, состояние, детекция застревания, менеджер задач.</p></div>
+      <div class="card"><div class="badge b-purple">10 мин</div><b>Автоматический прогон</b><p>Полный набор тестов выполняется каждые 10 минут в изолированном процессе, результаты видны в дашбордах.</p></div>
+      <div class="card"><div class="badge b-orange">OK</div><b>Гарантии заказчику</b><p>Каждый сценарий подтверждает: бизнес-процесс работает и метрики достоверны — основание доверять расчётам ROI.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Технологии</div>
+    <h2>Архитектура решения</h2>
+    <p class="lead">Веб-приложение: браузер (3D Three.js) → быстрый бэкенд на FastAPI → «физические» агенты-роботы → база телеметрии и мониторинг.</p>
+    <div class="imgbox" style="margin-top:24px;">
+      <img src="img/13_architecture.png" alt="Архитектура MagSim">
+      <div class="aside">
+        <div class="card" style="margin-bottom:14px;"><b>Слои системы</b>
+          <ul class="ticks">
+            <li>Браузер и nginx-фронтенд — 3D-сцена и управление</li>
+            <li>FastAPI-бэкенд — симуляция, диспетчеризация, REST и WebSocket</li>
+            <li>Агенты РТС/БВС и масштабировщик флота</li>
+            <li>TimescaleDB — хранение истории и прогнозов</li>
+            <li>Prometheus + Grafana — метрики и дашборды</li>
+          </ul>
+        </div>
+        <div class="card"><b>Результат</b><p>50 мс обновление состояния, двусторонние WebSocket-каналы, автоматическое масштабирование парка роботов в один клик.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Развёртывание</div>
+    <h2>Быстрый запуск на Docker</h2>
+    <p class="lead">Единый стек из 9 сервисов разворачивается командой docker compose up.</p>
+    <div class="imgbox" style="margin-top:24px;">
+      <img src="img/03_deployment_diagram.png" alt="Развертывание в Docker Compose">
+      <div class="aside">
+        <div class="card" style="margin-bottom:14px;"><b>Состав стека</b>
+          <ul class="ticks">
+            <li>Бэкенд, фронтенд, парк роботов-агентов, БВС-агент</li>
+            <li>Автомасштабировщик парка (по числу РТС)</li>
+            <li>TimescaleDB, Grafana, Prometheus, Blackbox Exporter</li>
+          </ul>
+        </div>
+        <div class="card"><b>Для бизнеса</b><p>Быстрое развёртывание у заказчика, расширение склада в интерфейсе, проверка сценариев пиковых нагрузок без риска для производства.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Внедрение</div>
+    <h2>Дорожная карта для заказчика</h2>
+    <div class="steps">
+      <div class="step"><div class="sno">ЭТАП 1</div><b>Оцифровка склада</b><p>Переносим карту, товары, потоки и ограничения заказчика в цифровую модель.</p></div>
+      <div class="step"><div class="sno">ЭТАП 2</div><b>Прогон сценариев</b><p>Проверяем пиковые сезоны, сбои, нехватку персонала и отказы оборудования.</p></div>
+      <div class="step"><div class="sno">ЭТАП 3</div><b>Расчёт KPI и ROI</b><p>Измеряем скорость выдачи, простои, загрузку и окупаемость автоматизации.</p></div>
+      <div class="step"><div class="sno">ЭТАП 4</div><b>Безопасный переход</b><p>Проверенные алгоритмы переносятся на реальные роботы — без «сюрпризов» на действующем складе.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide hero">
+  <div class="wrap">
+    <div class="kicker" style="color:#ffd54a;">Итог</div>
+    <h1>Ошибку пусть делает симуляция, а не склад</h1>
+    <div class="sub">MagSim даёт заказчику прозрачные метрики, обоснованное решение об автоматизации и готовый к проверке алгоритм управления флотом роботов.</div>
+    <div class="tag" style="margin-top:38px;">
+      Приглашаем на демонстрацию: запустим ваш сценарий в течение 2 недель
+      и покажем эффект в цифрах — скорость выдачи, простой, срок жизни батарей, окупаемость.
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="sep" id="sep"></div>
+<nav>
+  <button id="prev">‹</button>
+  <div class="count"><span id="cur">1</span> / <span id="tot"></span></div>
+  <div class="dots" id="dots"></div>
+  <button id="next">›</button>
+</nav>
+
+<script>
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var i=0;
+  var dotsEl=document.getElementById('dots');
+  document.getElementById('tot').textContent=slides.length;
+  slides.forEach(function(s,k){
+    var d=document.createElement('div');
+    d.className='dot'; if(k===0)d.className='dot on';
+    d.addEventListener('click',function(){go(k);});
+    dotsEl.appendChild(d);
+  });
+  var dots=[].slice.call(dotsEl.children);
+  function paint(){
+    slides.forEach(function(s,k){
+      s.classList.remove('active','before');
+      if(k===i)s.classList.add('active');
+      else if(k<i)s.classList.add('before');
+    });
+    dots.forEach(function(d,k){d.className='dot'+(k===i?' on':'');});
+    document.getElementById('cur').textContent=i+1;
+    document.getElementById('sep').style.width=((i+1)/slides.length*100)+'%';
+  }
+  function go(n){i=Math.max(0,Math.min(slides.length-1,n));paint();}
+  document.getElementById('next').onclick=function(){go(i+1);};
+  document.getElementById('prev').onclick=function(){go(i-1);};
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key==='PageDown')go(i+1);
+    else if(e.key==='ArrowLeft'||e.key==='PageUp')go(i-1);
+    else if(e.key==='Home')go(0);
+    else if(e.key==='End')go(slides.length-1);
+  });
+  var tx0=0;
+  document.addEventListener('touchstart',function(e){tx0=e.touches[0].clientX;});
+  document.addEventListener('touchend',function(e){
+    var dx=e.changedTouches[0].clientX-tx0;
+    if(Math.abs(dx)>60){ dx<0?go(i+1):go(i-1); }
+  });
+  paint();
+})();
+</script>
+</body>
+</html>

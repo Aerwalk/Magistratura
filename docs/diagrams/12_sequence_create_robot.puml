@@ -1,0 +1,77 @@
+@startuml
+title Добавление нового РТС — диаграмма последовательности
+
+actor Пользователь as User
+participant "Фронтенд (app.js)" as FE
+participant "WS /ws" as WS
+participant "Robot (entities/robot.py)\ncreate_robot()" as RB
+participant "AgentRegistry" as AR
+participant "agent_bootstrapper\n(каждые 1 с)" as BOOT
+participant "РТС-агент (новая реплика)" as RA
+participant "RobotScaler\n(опрос /api/debug)" as SCL
+participant "Docker Engine\n(docker compose)" as DOCK
+participant "WarehouseState" as ST
+
+User -> FE : выбор материала (product) для нового РТС\nклик «+ РТС»
+FE -> WS : WS /ws { "type":"create_robot", "data":{"product":p} }
+activate WS
+WS -> RB : create_robot(p)
+activate RB
+RB -> RB : _next_home(): поиск свободной домашней станции\n(14,0/2/4/6/8/10/11)
+alt нет свободной станции
+  RB -> ST : событие «⚠ Нет свободной домашней станции!»
+  RB --> WS : None (РТС не создан)
+  WS --> FE : предупреждение в логе интерфейса
+else станция найдена
+  RB -> RB : new_id = max id + 1\ncolor = цвет продукта (или случайный)\nrobot = Robot(new_id, product, color, home)
+  RB -> ST : add_home_cell(home); rebuild_aisle_cells()\nrobots.append(robot)\nсобытие «РТС-N создан для продукта p, станция home»
+  RB --> WS : robot
+end
+deactivate RB
+
+alt в пуле есть свободный реестр-агент (has_spare)
+  WS -> AR : pop_spare() → ws
+  WS -> AR : assign(robot.id, ws)
+  WS -> RA : send_robot: { "cmd":"assign", robot_id, home, speed }
+  activate RA
+  RA -> RA : инициализация: идентичность, позиция = home,\nbattery = 100%, battery_max = 100%
+  RA -> WS : ready { robot_id }
+  WS -> WS : handle_agent_message("ready"):\nr.agent_ready = true, фаза = idle
+  deactivate RA
+else свободного агента нет
+  WS -> ST : событие «⚠ Нет свободного агента для РТС-N!»
+  note over BOOT, DOCK : Новый РТС ждёт агента — его назначит bootstrapper,\nкогда появится свободная реплика (см. ниже).
+end
+
+par параллельно (непрерывно)
+  loop каждые 1 с
+    BOOT -> AR : has_spare()?
+    BOOT -> RB : пока есть spare WS и РТС без agent_ws\n→ pop_spare + assign + send_robot(assign)
+    BOOT -> RA : назначает агента незанятому РТС
+  end
+
+also
+
+  loop каждые POLL_INTERVAL=3 с
+    SCL -> WS : HTTP GET /api/debug → robots[]
+    activate SCL
+    SCL -> SCL : n_robots = max(MIN_REPLICAS=5, len(robots))\n(новый РТС увеличил len(robots))
+    SCL -> DOCK : docker compose --scale robot-agent=n\n(docker.sock, файл /compose/docker-compose.yml)
+    activate DOCK
+    DOCK -> RA : запуск новой реплики robot-agent (контейнер)
+    deactivate DOCK
+    RA -> AR : WS /agent/ws/robot → пул (spare)
+    deactivate SCL
+  end
+end
+
+RB --> WS : события в лог склада
+WS -> ST : state_update (robots[]) → broadcast
+WS -> FE : обновление списка РТС в интерфейсе
+
+note over FE, DOCK
+  Новый РТС готов к работе: в следующих тиках assign_tasks() будет
+  назначать ему задачи (putaway/retrieve/rebalance) по product.
+endnote
+
+@enduml

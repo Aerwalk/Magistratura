@@ -1,0 +1,51 @@
+@startuml
+title Процесс автоматического тестирования MagSim — диаграмма активности
+
+start
+:источник запуска;
+
+if (кто запускает?) then (таймер auto_test_runner\n(после 60 с → каждые 600 с))
+  :полный прогон: run_everything()\n(unit-тесты + все 17 сценариев);
+elseif (пользователь) then (GET /api/run-tests)
+  :полный прогон: run_everything()\n(unit-тесты + все 17 сценариев);
+elseif (пользователь) then (GET /api/run-scenario/{id})
+  :один сценарий: run_scenario(id);
+endif
+
+:_run_tests_subprocess():\nsubprocess: python -c \"run_everything()\"\n(изолированный процесс, cwd=app/tests, таймаут 300 с);
+
+partition "Юнит-тесты (unittest)" {
+  :discover(\"test_*.py\") — 8 модулей:\nTestBatteryDrain · TestGrid · TestFleetMetrics ·\nTestPathfinding · TestRobot · TestState ·\nTestStuckDetection · TestTaskManager;
+  :прогон набора TextTestRunner →\n{ total, passed, failed, tests[]{name, passed, detail} };
+}
+
+partition "Сценарии (17 шт., SCENARIOS из scenarios.py)" {
+  :для каждого из 17 сценариев:\nпорядок в SCENARIOS (1…17, мета: SCENARIO_META);\n_reset() — сброс state / robots / uav / очередей /\nрезервирований;  агенты помечаются ready;
+  :выполнение шагов сценария\n(поставки, запросы, assign_tasks,\nadvance_robot_phases, update_uav, rebalance…);
+  :проверка expected → результат {id, name, expected, passed, detail};\nлюбое исключение → passed=false;
+}
+
+:сборка JSON payload { \"tests\": …, \"scenarios\": … };
+
+partition "Метрики и видимость" {
+  :record_test_results(payload) → magsim_tests_*\n(last_result / runs_total / failed_total / last_run_timestamp);
+  :Prometheus scrape GET /metrics (каждые 5 с);
+  :Grafana (health.json):\nстатусы тестов и сценариев во времени;
+}
+
+if (API-запрос был ручным?) then (да)
+  :HTTP JSON-ответ (планировщик сохраняет результат\nдля /api/dashboard и линеек);
+else (нет / фоновый auto_test_runner)
+  : результат только в метриках\n(логирование в stdout сервера);
+endif
+
+note right
+  runner.run_everything() возвращает итог unit-тестов + массив результатов сценариев.
+  auto_test_runner (main.py) вызывает его в to_thread, записывает в gauges и логирует
+  сводку (unit passed/total, сценарии passed/total). Ошибки subprocess попадают в
+  magsim_tests_last_result{suite=runner, name=_error} = 0.
+endnote
+
+stop
+
+@enduml

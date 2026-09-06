@@ -44,8 +44,22 @@ class Robot:
         self.wait_ticks = 0
         self.stuck_ticks = 0
         self.last_pos = home
+        self.stationary_ticks = 0
+        self._stuck_sample_pos = [float(home[0]), float(home[1])]
+        self.stuck_alert_raised = False
+        self.stuck_since = None
+        self.distance_moved = 0.0
+        self.last_telemetry_ts = None
         self.capacity = 1
         self.carry_qty = 0
+        self.battery = 100.0
+        self.battery_max = 100.0
+        self.charging_ticks = 0
+        self.charging_start_ts = None
+        self.battery_at_charge_start = 0.0
+        self.executing = False
+        self.agent_ws = None
+        self.agent_ready = False
 
     def is_moving(self) -> bool:
         return self.current_target is not None
@@ -78,6 +92,15 @@ class Robot:
         self.carry_appear_scale = 1.0
         self.wait_ticks = 0
         self.carry_qty = 0
+        self.charging_ticks = 0
+        self.charging_start_ts = None
+        self.battery_at_charge_start = 0.0
+        self.stationary_ticks = 0
+        self._stuck_sample_pos = [float(self.home[0]), float(self.home[1])]
+        self.stuck_alert_raised = False
+        self.stuck_since = None
+        self.distance_moved = 0.0
+        self.last_telemetry_ts = None
 
 
 robots = [Robot(idx, cfg["product"], cfg["color"], cfg["home"]) for idx, cfg in enumerate(_ROBOT_INITIAL_CONFIG)]

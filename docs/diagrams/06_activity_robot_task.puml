@@ -1,0 +1,107 @@
+@startuml
+title Жизненный цикл задачи РТС — диаграмма активности (putaway / retrieve / rebalance)
+
+start
+:Тик симуляции (50 мс);
+:advance_robot_phases() по каждому РТС;
+
+if (РТС agent_ready? и не выполняет маршрут?) then (нет)
+  stop
+endif
+
+if (есть задача task?) then (да)
+  #orange:task.type == "putaway" → _handle_putaway_phase;
+else (нет)
+  #lightblue:assign_tasks():\nназначить задачу из очереди продукта РТС;
+  if (задача назначена?) then (да)
+    if (тип == putaway?) then (да)
+      #orange:phase = to_pickup_zone → маршрут к зоне забора;
+    elseif (тип == retrieve?) then (да)
+      #lightblue:выбор полки + резерв\nphase = to_shelf_for_pick;
+    elseif (тип == rebalance?) then (да)
+      #lightgreen:phase = rebalance_pick;
+    endif
+  else (нет)
+    if (pos != home) then (да)
+      #orange:маршрут домой (phase = to_home);
+    else (нет)
+      if (АКБ ≤ BATTERY_CHARGE_THRESHOLD) then (да)
+        #grey:phase = charging\n(start_charging → РТС-агенту);
+      endif
+    endif
+  endif
+endif
+
+
+partition "Поставка (putaway)" {
+  :РТС в to_pickup_zone → прибыл в зону забора;
+  :carry = product, pickup_anim_ticks=15;
+  repeat
+    :_start_putaway_leg: выбор полки _(скоринг: близость/спрос/однотипность)_;
+    if (путь найден?) then (да)
+      :маршрут к полке, phase = to_shelf_for_put;
+      :прибыл → размещение {min(carry_qty, место)} на полке;
+      :reserved_put_shelves.discard(shelf);
+      if (остались излишки carry_qty > 0?) then (да)
+        :повторный выбор полки;
+      endif
+    else (нет)
+      if (stuck_ticks > 100?) then (да)
+        #red:возврат товара на склад\n(stock_total += carry_qty);
+        :task = None, phase = idle;
+      else (нет)
+        :подождать, stuck_ticks++ → retry;
+      endif
+    endif
+  repeat while (carry_qty > 0 И задача не закрыта) is (ещё есть груз)
+  :task = None;
+  if (в очереди есть ещё putaway?) then (да)
+    :взять следующую, phase = to_pickup_zone;
+  else (нет)
+    :phase = idle;
+  endif
+}
+
+
+partition "Выдача (retrieve)" {
+  :to_shelf_for_pick → прибыл к полке;
+  :забрать take = min(остаток, count полки);
+  :count -= take; carry/task обновить;\nretrieved_total += take; stock_total -= take;
+  if (остаток задачи > 0?) then (да)
+    :_choose_best_pick_shelf → следующая полка;
+    if (полка есть?) then (да)
+      :маршрут к следующей полке (to_shelf_for_pick);
+    else (нет)
+      :вести к выходу с тем, что есть;
+    endif
+  endif
+  :маршрут к выходу (phase = to_exit);
+  :к выходу → delivered_total += carry_qty; delivery_anim_ticks=25;
+  if (в очереди ещё есть retrieve?) then (да)
+    :сразу новая полка (to_shelf_for_pick);
+  else (нет)
+    :фаза = idle; маршрут домой; при необходимости зарядка;
+  endif
+}
+
+
+partition "Ребалансировка (rebalance)" {
+  if (rebalance_warehouse(force)? спрос ≥ 3 или force) then (нет)
+    :событие «Недостаточно данных»;
+    stop
+  endif
+  :расчёт перемещений: сортировка полок по близости к выходу;
+  :план {from → to, product} → robot_task_queues;
+  :rebalance_active = true; moves_remaining = count;
+  repeat
+    :phase = rebalance_pick: взять 1 ед. с from_shelf;
+    :маршрут к to_shelf (phase = rebalance_put);
+    :размещение на to_shelf;
+    :moves_remaining--;
+  repeat while (остались перемещения rebalance?) is (да)
+  :check_rebalance_complete() → rebalance_active = false;
+}
+
+stop
+
+@enduml

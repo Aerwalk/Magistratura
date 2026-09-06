@@ -1,0 +1,165 @@
+{
+  "uid": "magsim-battery",
+  "title": "MagSim — Батареи РТС",
+  "tags": ["magsim"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Заряд батареи по роботам",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 20 },
+              { "color": "green", "value": 40 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1 minute', time) AS \"time\",\n       robot_id::text AS metric,\n       avg(battery) AS battery\nFROM robot_telemetry\nWHERE $__timeFilter(time)\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Макс. ёмкость (деградация)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1 minute', time) AS \"time\",\n       robot_id::text AS metric,\n       avg(battery_max) AS battery_max\nFROM robot_telemetry\nWHERE $__timeFilter(time)\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Время зарядки (сеансы)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 20, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT start_ts AS \"time\",\n       robot_id::text AS metric,\n       duration_sec AS \"duration\"\nFROM robot_charge_sessions\nWHERE $__timeFilter(start_ts)\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "События и ошибки (логи)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 30, "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1 minute', time) AS \"time\",\n       level AS metric,\n       count(*) AS events\nFROM robot_logs\nWHERE $__timeFilter(time)\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Оставшееся время зарядки (ETA, с)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\",\n       robot_id::text AS metric,\n       (payload->>'remaining_sec')::float AS remaining_sec\nFROM robot_logs\nWHERE event = 'charging_progress'\n  AND $__timeFilter(time)\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Среднее время зарядки по РТС (с)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "continuous", "scheme": "blues" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 120 },
+              { "color": "red", "value": 300 }
+            ]
+          },
+          "custom": { "fillOpacity": 20, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "auto",
+        "displayMode": "gradient",
+        "legend": { "showLegend": true },
+        "text": { "titleSize": 20, "valueSize": 18 }
+      },
+      "datasource": { "type": "postgres", "uid": "timescaledb2" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb2" },
+          "format": "table",
+          "rawSql": "SELECT robot_id::text AS metric,\n       avg(duration_sec) AS avg_duration,\n       count(*) AS sessions\nFROM robot_charge_sessions\nWHERE $__timeFilter(start_ts)\nGROUP BY robot_id\nORDER BY metric",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

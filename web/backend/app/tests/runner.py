@@ -40,3 +40,14 @@ def run_unit_tests():
 def run_all_scenarios():
     from tests.scenarios import run_all_scenarios as _run
     return _run()
+
+
+def run_everything():
+    return {
+        "tests": run_unit_tests(),
+        "scenarios": run_all_scenarios(),
+    }
+
+
+if __name__ == "__main__":
+    print(json.dumps(run_everything(), ensure_ascii=False))

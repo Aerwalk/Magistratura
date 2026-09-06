@@ -1,0 +1,161 @@
+@startuml
+title MagSim Web — Диаграмма развертывания (Docker Compose, все сервисы)
+
+skinparam componentStyle rectangle
+
+node "Пользователь" as browser {
+  node "Браузер" as client {
+    component "3D-сцена Three.js\n(WebGL + OrbitControls)" as c3d
+    component "WebSocket-клиент /ws" as cws
+    component "REST-клиент /api/*" as crst
+  }
+}
+
+node "Хост / Docker Engine" as host {
+
+  node "Сеть magsim-net (docker bridge, driver: bridge)" as net {
+
+    node "magsim-frontend\nnginx, контейнер: magsim-frontend" as fe {
+      artifact "build: ./frontend · restart: unless-stopped"
+      artifact "ports: 8080:80"
+      artifact "index.html / app.js / style.css"
+      artifact "nginx.conf — обратный прокси\n'/ws' и '/api/*' → backend:8000"
+      artifact "depends_on: backend"
+    }
+
+    node "magsim-backend\nuvicorn app.main:app, контейнер: magsim-backend" as be {
+      artifact "build: ./backend · restart: unless-stopped"
+      artifact "ports: 8000:8000"
+      artifact "env: DATABASE_URL=postgresql://magsim:magsim@timescale:5432/magsim"
+      artifact "FastAPI: WS /ws · /agent/ws/robot · /agent/ws/uav"
+      artifact "Движок симуляции (тик 50 мс), REST /api/*, /metrics"
+      artifact "AgentRegistry + WebSocketManager"
+      artifact "Адаптер БД (asyncpg, очереди, writer_loop 5 с)"
+      artifact "Startup-корутины: db.init · writer_loop · simulation_tick ·\nagent_bootstrapper · auto_test_runner"
+      artifact "depends_on: timescale (service_healthy)"
+    }
+
+    node "robot-agent ×N реплик\n(контейнер: magsim-robot-agent)" as ra {
+      artifact "build: ./agents/robot · restart: unless-stopped"
+      artifact "deploy.replicas: 5 (базово), масштабируется scaler'ом"
+      artifact "env: PLANNER_WS=ws://backend:8000/agent/ws/robot"
+      artifact "RobotAgent: движение по маршруту 0.25 ячейка/тик, АКБ, зарядка"
+      artifact "Взаимодействие: команды assign/route/start_charging/stop/set_speed/set_home,\nсообщения ready/arrived/charge_end/charging_progress/telemetry"
+      artifact "depends_on: backend"
+    }
+
+    node "magsim-robot-scaler\n(контейнер: magsim-robot-scaler)" as scl {
+      artifact "build: ./agents/robot/scaler · restart: unless-stopped"
+      artifact "env: BACKEND_URL=http://backend:8000 · POLL_INTERVAL=3 ·\nCOMPOSE_PROJECT=web · COMPOSE_FILE=/compose/docker-compose.yml ·\nSERVICE=robot-agent · MIN_REPLICAS=5"
+      artifact "scaler.py: опрос GET /api/debug каждые 3 с"
+      artifact "docker compose up -d --scale robot-agent=N\n(если running < max(MIN_REPLICAS, число РТС))"
+      artifact "volumes: /var/run/docker.sock, docker-compose.yml → /compose (ro)"
+      artifact "depends_on: backend"
+    }
+
+    node "magsim-uav-agent\n(контейнер: magsim-uav-agent)" as ua {
+      artifact "build: ./agents/uav · restart: unless-stopped"
+      artifact "env: PLANNER_WS=ws://backend:8000/agent/ws/uav"
+      artifact "UAVAgent: конечный автомат сканирования\n(idle → to_inbound → scanning → to_home)"
+      artifact "доп. env от scaler'а: BACKEND_URL/SERVICE (для опроса /api/debug)"
+      artifact "depends_on: backend"
+    }
+
+    node "magsim-timescale :5432\nTimescaleDB pg16, контейнер: magsim-timescale" as ts {
+      artifact "image: timescale/timescaledb:latest-pg16 · restart: unless-stopped"
+      artifact "ports: 5432:5432"
+      artifact "env: POSTGRES_USER=magsim · POSTGRES_PASSWORD=magsim · POSTGRES_DB=magsim"
+      artifact "healthcheck: pg_isready -U magsim -d magsim (interval 5s)"
+      database "robot_telemetry\n(гипертаблица по времени)"
+      database "robot_logs\n(события, jsonb payload)"
+      database "robot_charge_sessions"
+      database "telemetry_hourly\n(непрерывный агрегат)"
+      artifact "volumes: timescale-data → /var/lib/postgresql/data"
+    }
+
+    node "magsim-prometheus :9090\n(контейнер: magsim-prometheus)" as prom {
+      artifact "image: prom/prometheus:latest · restart: unless-stopped"
+      artifact "ports: 9090:9090"
+      artifact "volumes: prometheus.yml, alertrules.yml → /etc/prometheus/ (ro)"
+      artifact "global: scrape_interval 5s · evaluation_interval 5s"
+      artifact "scrape_configs: magsim-backend (:8000/metrics),\nprometheus (self), magsim-probes (HTTP), magsim-tcp-probes (TCP)"
+      artifact "rule_files: /etc/prometheus/alertrules.yml"
+      artifact "depends_on: backend, blackbox-exporter"
+    }
+
+    node "magsim-blackbox :9115\n(контейнер: magsim-blackbox)" as blackbox {
+      artifact "image: prom/blackbox-exporter:latest · restart: unless-stopped"
+      artifact "command: --config.file=/etc/blackbox_exporter/config.yml"
+      artifact "volumes: blackbox.yml → /etc/blackbox_exporter/config.yml (ro)"
+      artifact "модули: http_2xx, tcp_connect (timeout 5s, ipv4)"
+    }
+
+    node "magsim-grafana :3000\n(контейнер: magsim-grafana)" as g {
+      artifact "image: grafana/grafana:latest · restart: unless-stopped"
+      artifact "ports: 3000:3000"
+      artifact "env: GF_SECURITY_ADMIN_USER=admin · GF_SECURITY_ADMIN_PASSWORD=magsim"
+      artifact "volumes: ./grafana/provisioning → /etc/grafana/provisioning (ro),\n./grafana/dashboards → /var/lib/grafana/dashboards (ro)"
+      artifact "Дашборды (folder MagSim): battery.json, fleet.json,\nhealth.json, heatmap.json"
+      artifact "Источники данных: Prometheus (uid=prometheus),\nTimescaleDB (uid=timescaledb2, default)"
+      artifact "depends_on: timescale, prometheus"
+    }
+  }
+
+  node "Тома и монтирования Docker" as vols {
+    node "timescale-data\n(/var/lib/postgresql/data)" as vol1
+    node "docker.sock + docker-compose.yml\n(/var/run/docker.sock, /compose — ro)\nмонтируется в robot-scaler" as vol2
+    node "grafana: provisioning + dashboards\n(./grafana/provisioning → /etc/grafana/provisioning:ro\n./grafana/dashboards → /var/lib/grafana/dashboards:ro)" as vol3
+    node "prometheus: prometheus.yml + alertrules.yml\n(./prometheus/ → /etc/prometheus/:ro)" as vol4
+    node "blackbox: blackbox.yml\n(./prometheus/blackbox.yml → /etc/blackbox_exporter/config.yml:ro)" as vol5
+  }
+}
+
+' ─── Клиент → Frontend/Backend ───
+c3d --> fe : HTTP :8080 (внешний порт) → nginx
+cws --> fe : WS /ws через прокси (wss/ws :8080)
+crst --> be : HTTP :8000 (прямой доступ для разработки)
+fe --> be : nginx-прокси "/ws" и "/api/*" → backend:8000
+
+' ─── Backend ↔ Агенты ───
+be --> ra : WS /agent/ws/robot (запросы-команды)\nassign / route / start_charging / stop / set_speed / set_home
+ra --> be : готов / прибыл / прогресс зарядки /\nзавершение зарядки / телеметрия
+be --> ua : WS /agent/ws/uav — cmd: scan
+ua --> be : scan_done (qty, product) / телеметрия
+
+' ─── Масштабировщик ───
+scl --> be : HTTP GET /api/debug\n(список РТС, пул агентов) каждые 3 с
+scl --> vol2 : монтирование docker.sock и compose-файла
+scl --> ra : docker compose up -d --scale robot-agent=N\n(управление репликами через Docker API)
+
+' ─── Движок ↔ БД ───
+be --> ts : asyncpg (TCP 5432)\nCOPY robot_telemetry / executemany\nсброс очередей каждые 5 с
+g --> ts : PostgreSQL datasource (TCP 5432)\n(uid=timescaledb2, default, база magsim)
+ts --> vol1 : том timescale-data (/var/lib/postgresql/data)
+
+' ─── Мониторинг ───
+be --> prom : GET /metrics — Prometheus text format\nscrape каждые 5 с (job magsim-backend)
+prom --> blackbox : scrape :9115 /probe (magsim-probes,\nmagsim-tcp-probes)
+blackbox --> be : HTTP probe → backend:8000/healthz\nHTTP probe → backend:8000/api/health\nHTTP probe → backend:8000/metrics
+blackbox --> fe : TCP probe → frontend:80
+blackbox --> g : TCP probe → grafana:3000
+blackbox --> ts : TCP probe → timescale:5432
+blackbox --> prom : TCP probe → prometheus:9090
+g --> prom : Prometheus datasource (uid=prometheus, proxy :9090)
+prom --> vol4 : prometheus.yml + alertrules.yml (ro)
+g --> vol3 : provisioning/ + dashboards/ (ro)
+blackbox --> vol5 : blackbox.yml (ro)
+
+legend bottom
+  Все 9 сервисов docker-compose: backend, robot-agent (replicas 5), robot-scaler,
+  uav-agent, frontend, timescale, grafana, blackbox-exporter, prometheus.
+  Сеть: bridge-сеть magsim-net — общение по именам контейнеров.
+  Внешние порты: frontend 8080, backend 8000, grafana 3000, timescale 5432, prometheus 9090.
+  Готовность: backend ждёт timescale (service_healthy), агенты и frontend — backend,
+  grafana — timescale + prometheus, prometheus — backend + blackbox.
+  Мониторинг: Prometheus scrape /metrics (5 с) + Blackbox HTTP/TCP пробы +
+  alertrules (RobotStuck, BatteryCritical/Low, BatteryDegraded, RobotInactive,
+  WarehouseNoCapacity, ServiceProbeDown, SimLoopStalled, AgentsDisconnected, TestsFailing).
+  Grafana: 4 дашборда (battery/fleet/health/heatmap), источник default = TimescaleDB.
+endlegend
+
+@enduml

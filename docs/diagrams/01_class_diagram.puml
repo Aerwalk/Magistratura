@@ -1,0 +1,302 @@
+@startuml
+title MagSim — Диаграмма классов (веб-версия, backend)
+
+package "API / Пограничный слой" {
+  class FastAPIApp <<component>>
+  class "websocket_endpoint /ws" as WSEndpoint
+  class "websocket_endpoint /agent/ws/{kind}" as AgentWSEndpoint
+  class RESTHandlers <<component>>
+  class TelemetryBatch
+  class LogEvent
+}
+
+package "Ядро" {
+  class WarehouseState <<singleton>> {
+    -_instance : WarehouseState
+    -_initialized : bool
+    +shelf_state : dict
+    +stock_total : defaultdict
+    +demand : defaultdict
+    +delivered_total : defaultdict
+    +retrieved_total : defaultdict
+    +event_log : deque
+    +uav_scan_queue : deque
+    +robot_task_queues : dict
+    +reserved_put_shelves : set
+    +reserved_pick_shelves : set
+    +rebalance_active : bool
+    +rebalance_moves_remaining : int
+    +shelf_capacity_override : dict
+    +shelf_allowed_products : dict
+    +reset()
+  }
+
+  class GridManager <<module>> {
+    -CUSTOM_SHELF_CELLS : set
+    -REMOVED_SHELF_CELLS : set
+    +get_grid_w() : int
+    +get_grid_h() : int
+    +get_exit_cell() : tuple
+    +get_inbound_cell() : tuple
+    +get_inbound_pick_cell() : tuple
+    +is_shelf_cell(x, y) : bool
+    +all_shelves()
+    +shelf_access_cells(shelf) : list
+    +shelf_distance_score(shelf) : float
+    +add_custom_shelf(x, y)
+    +remove_custom_shelf(x, y)
+    +set_exit_cell(x, y)
+    +set_inbound_cell(x, y)
+    +set_inbound_pick_cell(x, y)
+    +set_grid_size(w, h)
+    +rebuild_aisle_cells()
+    -AISLE_CELLS : set
+  }
+
+  class Pathfinding <<module>> {
+    +astar(start, goal, blocked) : list
+  }
+}
+
+package "Сущности" {
+  class Robot {
+    +id : int
+    +name : str
+    +product : str
+    +products : set
+    +color : tuple
+    +home : tuple
+    +pos : tuple
+    +draw_pos : list
+    +route : list
+    +current_target : tuple
+    +task : dict
+    +carry : str
+    +phase : str
+    +next_route_after_phase : list
+    +final_route_after_exit : list
+    +target_shelf : tuple
+    +speed : float
+    +capacity : int
+    +carry_qty : int
+    +battery : float
+    +battery_max : float
+    +charging_ticks : int
+    +charging_start_ts : datetime
+    +distance_moved : float
+    +wait_ticks : int
+    +stuck_ticks : int
+    +stationary_ticks : int
+    +executing : bool
+    +agent_ready : bool
+    +agent_ws : WebSocket
+    +is_moving() : bool
+    +is_active() : bool
+    +check_stuck() : bool
+    +reset()
+  }
+
+  class UAV {
+    +pos : list
+    +state : str
+    +scan_ticks : int
+    +uav_color : str
+    +reset()
+  }
+
+  class BaseUtils <<module>> {
+    +move_agent_towards_2d(pos, target, speed) : list
+    +close2(a, b, eps) : bool
+    +close3(a, b, eps) : bool
+  }
+}
+
+package "Симуляция" {
+  class TaskManager <<module>> {
+    +supply_labeled(product, qty)
+    +supply_unlabeled(qty)
+    +request_product(product, qty)
+    +assign_tasks()
+    -- private --
+    -_choose_best_put_shelf(product) : tuple
+    -_choose_best_pick_shelf(product) : tuple
+    -_pick_robot_queue(robot, state)
+    -_warn_no_robot(product)
+    -_warn_full_shelves(product)
+  }
+
+  class RobotController <<module>> {
+    +advance_robot_phases()
+    +detect_stuck_robots()
+    -_reset_tick_reservations()
+    -_reserve_route(route)
+    -_get_blocked_cells(exclude_robot) : set
+    -_route_to_shelf(robot, shelf, blocked) : list
+    -_route_to_pickup_zone(robot, blocked) : list
+    -_choose_best_put_shelf(product) : tuple
+    -_choose_best_pick_shelf(product) : tuple
+    -_start_charging(robot)
+    -_start_putaway_leg(robot, task) : bool
+    -_handle_putaway_phase(robot, task)
+    -_handle_retrieve_phase(robot, task)
+    -_handle_rebalance_phase(robot, task)
+  }
+
+  class UAVController <<module>> {
+    +update_uav()
+  }
+
+  class Rebalancer <<module>> {
+    +rebalance_warehouse(force)
+    +check_rebalance_complete()
+  }
+}
+
+package "Инфраструктура" {
+  class AgentRegistry {
+    +spare_robot_ws : list
+    +robot_agents : dict
+    +agent_robot : dict
+    +uav_ws : WebSocket
+    +has_spare() : bool
+    +pop_spare() : WebSocket
+    +add_spare(ws)
+    +assign(robot_id, ws)
+    +remove_ws(ws)
+    +send_robot(robot_id, msg) : bool
+    +send_uav(msg) : bool
+  }
+
+  class WebSocketManager {
+    +connections : list
+    +connect(ws) : Async
+    +disconnect(ws)
+    +broadcast(data) : Async
+  }
+
+  class DBStore <<module>> {
+    +init(forever)
+    +close()
+    +writer_loop()
+    +flush_once()
+    +push_telemetry(ts, robot_id, x, y, phase, battery, ...)
+    +push_log(robot_id, level, event, payload)
+    +push_charge_session(robot_id, ...)
+    +get_telemetry(robot_id, ...) : list
+    +get_battery_history(hours, bucket) : list
+    +get_predictions(window_hours) : list
+    +count_battery_replacements() : dict
+    +is_enabled() : bool
+  }
+
+  class MetricsModule <<module>> {
+    +render_prometheus() : (str, str)
+    +record_robot(r)
+    +record_warehouse(state)
+    +record_sim_tick(now)
+    +record_health(now)
+    +record_test_results(payload)
+    +record_cell_visit(robot_id, cell)
+    +record_distance_moved(robot_id, cells)
+    +record_task_completed(robot_id, task_type)
+    +record_task_assigned(robot_id, task_type)
+    +record_stuck_event(robot)
+    +record_battery_replaced(robot)
+    +record_charge_session(robot)
+  }
+
+  interface "WebSocketProtocols" as WSProto
+  note right of WSProto
+    /ws          : state_update → фронтенду,
+                   supply_*/request_*/create_* ← от фронтенда
+    /agent/ws/robot : assign/route/start_charging ←, ready/arrived/charge_end/telemetry →
+    /agent/ws/uav   : scan ←, scan_done/telemetry →
+    /metrics        : Prometheus scrape → text/plain
+  endnote
+}
+
+package "Конфигурация" {
+  class Constants <<module>> {
+    +PRODUCTS : list
+    +PRODUCT_COLORS : dict
+    +SHELF_CAPACITY : int
+    +AGENT_SPEED : float
+    +TICK_MS : int
+    +BATTERY_* : float
+    +EXIT_CELL / INBOUND_CELL / INBOUND_PICK_CELL : tuple
+    +UAV_HOME_POS : tuple
+    +HOME_CELLS : list
+    +SHELF_X : set
+    +GRID_W : int
+    +GRID_H : int
+    +hex_to_rgba(hex) : tuple
+    +add_product(name, color)
+  }
+}
+
+FastAPIApp --> WSEndpoint
+FastAPIApp --> AgentWSEndpoint
+FastAPIApp --> RESTHandlers
+WSEndpoint --> TaskManager
+WSEndpoint --> Rebalancer
+WSEndpoint --> GridManager
+WSEndpoint --> RobotController
+WSEndpoint --> AgentRegistry
+WSEndpoint --> Constants
+AgentWSEndpoint --> AgentRegistry
+AgentWSEndpoint --> DBStore
+
+RESTHandlers --> DBStore
+RESTHandlers --> GridManager
+
+TaskManager --> WarehouseState
+TaskManager --> GridManager : shelf_access_cells / get_exit_cell
+TaskManager --> Pathfinding : astar
+TaskManager --> Robot : robots[]
+TaskManager --> RobotController : _get_blocked_cells, _reserve_route
+TaskManager --> MetricsModule : record_task_assigned
+
+RobotController --> WarehouseState
+RobotController --> GridManager
+RobotController --> Pathfinding
+RobotController --> Robot
+RobotController --> AgentRegistry : fire_and_forget(send_robot)
+RobotController --> DBStore : push_log
+RobotController --> MetricsModule : record_cell_visit, record_task_completed, record_stuck_event
+
+UAVController --> WarehouseState
+UAVController --> GridManager : get_inbound_cell
+UAVController --> UAV
+UAVController --> AgentRegistry : send_uav(scan)
+
+Rebalancer --> WarehouseState
+Rebalancer --> GridManager
+Rebalancer --> Robot : robots[]
+Rebalancer --> TaskManager : robot_task_queues
+
+simulationTick --> RobotController : _reset_tick_reservations, advance_robot_phases
+simulationTick --> TaskManager : assign_tasks
+simulationTick --> UAVController : update_uav
+simulationTick --> Rebalancer : check_rebalance_complete
+simulationTick --> WebSocketManager : broadcast(serialize_state)
+simulationTick --> MetricsModule : record_sim_tick
+simulationTick --> DBStore : emit_telemetry
+
+AgentRegistry ..> WebSocketProtocols : отправка JSON-сообщений
+DBStore ..> WebSocketProtocols
+MetricsModule ..> WebSocketProtocols : /metrics → Prometheus
+
+Robot --> BaseUtils : move_agent_towards_2d
+UAV --> BaseUtils : move_agent_towards_2d
+
+legend
+  Классы соответствуют модулям web/backend/app.
+  Симуляционный тик: каждые 50 мс
+  (advance_robot_phases → assign_tasks → update_uav →
+   check_rebalance_complete → flush_routes → record_sim_tick → broadcast).
+  Запись Prometheus: render_prometheus() вызывается при GET /metrics.
+  Startup-корутины: db.init, db.writer_loop, simulation_tick,
+  agent_bootstrapper, auto_test_runner.
+endlegend
+
+@enduml

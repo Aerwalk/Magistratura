@@ -5,6 +5,31 @@ from config import PRODUCTS, SHELF_CAPACITY
 from core.grid import all_shelves
 
 
+def _ship_log_to_db(text: str) -> None:
+    """Forward an event_log entry to TimescaleDB robot_logs (best-effort)."""
+    try:
+        from db import push_log
+        from obs import current_trace_id
+        txt = str(text)
+        level = "warning" if txt.startswith("⚠") else "info"
+        tid = current_trace_id()
+        push_log(None, level, txt, {"trace_id": tid} if tid else None)
+    except Exception:
+        pass
+
+
+class _EventLogDeque(deque):
+    """Deque that also persists every entry into robot_logs for Grafana."""
+
+    def append(self, x):
+        super().append(x)
+        _ship_log_to_db(x)
+
+    def appendleft(self, x):
+        super().appendleft(x)
+        _ship_log_to_db(x)
+
+
 class WarehouseState:
     _instance: Optional['WarehouseState'] = None
 
@@ -23,7 +48,7 @@ class WarehouseState:
         self.demand = defaultdict(int)
         self.delivered_total = defaultdict(int)
         self.retrieved_total = defaultdict(int)
-        self.event_log = deque(maxlen=500)
+        self.event_log = _EventLogDeque(maxlen=500)
         self.uav_scan_queue = deque()
         self.robot_task_queues = {p: deque() for p in PRODUCTS}
         self.reserved_put_shelves = set()

@@ -1,0 +1,80 @@
+@startuml
+title Внутренний цикл симуляции (тик) — диаграмма последовательности
+
+participant "simulation_tick()\n(корутина, 50 мс)" as TICK
+participant "RobotController" as RC
+participant "TaskManager" as TM
+participant "UAVController" as UC
+participant "Rebalancer" as REB
+participant "AgentRegistry" as AR
+participant "WebSocketManager" as WSM
+participant "Адаптер БД" as DB
+participant "Prometheus-метрики" as MET
+participant "WarehouseState" as ST
+
+loop бесконечно (каждые 50 мс)
+  TICK -> RC : _reset_tick_reservations()
+  TICK -> RC : advance_robot_phases()
+  activate RC
+  RC -> RC : detect_stuck_robots()\n(stationary > 30 с → алерт + cancel route + stop agent)
+  RC -> ST : чтение/изменение shelf_state,\nочереди, фазы, reserve_*_shelves
+  RC -> AR : fire_and_forget: send_robot(...)\n(start_charging / новые маршруты)
+  RC -> DB : push_log (charging_start и т.п.)
+  deactivate RC
+
+  TICK -> TM : assign_tasks()
+  activate TM
+  TM -> ST : свободные РТС ← задачи из очередей
+  TM -> ST : резерв полок, target_shelf, routes
+  deactivate TM
+
+  TICK -> UC : update_uav()
+  activate UC
+  UC -> ST : uav_scan_queue → если UVA idle → send_uav(cmd:scan)
+  UC -> AR : fire_and_forget(send_uav)
+  deactivate UC
+
+  TICK -> REB : check_rebalance_complete()
+  activate REB
+  REB -> ST : rebalance_active → false, если задач rebalance больше нет
+  deactivate REB
+
+  TICK -> AR : flush_routes()
+  activate AR
+  AR -> AR : для каждого РТС: если route и не executing и не заряжается →\nпометить executing + send_robot({cmd:"route", route})
+  AR -> AR : входящие от агентов уже обработаны\nhandle_agent_message (готов/прибыл/телеметрия/сканирование)
+  deactivate AR
+
+  TICK -> MET : record_sim_tick(now)
+  activate MET
+  MET -> MET : health_sim_ticks_total.inc()\nhealth_last_tick_timestamp.set(now)
+  deactivate MET
+
+  TICK -> TICK : _TICK += 1
+  alt каждый 20-й тик (~1 Гц)
+    TICK -> DB : emit_telemetry()
+    activate DB
+    DB -> DB : push_telemetry → очередь
+    deactivate DB
+  end
+
+  TICK -> WSM : broadcast(serialize_state())
+  activate WSM
+  WSM -> WSM : JSON state_update → всем клиентам /ws
+  deactivate WSM
+
+  TICK -> TICK : await asyncio.sleep(0.05)
+end
+
+note over TICK, ST
+  Корутины запускаются на startup:
+  db.init(forever=True), db.writer_loop(), simulation_tick(),
+  agent_bootstrapper(), auto_test_runner().
+  writer_loop каждые 5 с сбрасывает очереди в TimescaleDB (flush_once).
+  auto_test_runner: каждые AUTO_TESTS_INTERVAL_SEC (600 с) запускает
+  tests/runner.run_everything() в subprocess → record_test_results() → gauges.
+  GET /metrics → render_prometheus(): record_robot(), record_warehouse(),
+  record_health() → Prometheus text format.
+endnote
+
+@enduml

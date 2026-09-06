@@ -1,4 +1,4 @@
-"""10 test scenarios for the warehouse simulation."""
+"""17 test scenarios for the warehouse simulation."""
 
 import sys, os, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,7 +10,7 @@ from entities.uav import uav
 from config import PRODUCTS, PRODUCT_COLORS, add_product
 from config.constants import hex_to_rgba
 from simulation.task_manager import supply_labeled, request_product, supply_unlabeled, assign_tasks
-from simulation.robot_controller import move_robots_one_step, advance_robot_phases
+from simulation.robot_controller import advance_robot_phases, _reset_tick_reservations
 from simulation.uav_controller import update_uav
 from simulation.rebalancer import rebalance_warehouse
 from entities.robot import create_robot
@@ -30,12 +30,12 @@ SCENARIO_META = {
         "expected": "После поставки 5 единиц без метки в очередь UAV должен добавиться 1 элемент (суммарная поставка)"
     },
     4: {
-        "name": "Движение робота к цели",
-        "expected": "Робот с задачей должен начать движение: draw_pos изменяется за 10 шагов"
+        "name": "Планирование маршрута для задачи",
+        "expected": "Робот с задачей получает маршрут к зоне забора и фазу to_pickup_zone"
     },
     5: {
-        "name": "Сканирование UAV",
-        "expected": "UAV должен начать сканирование: состояние изменяется с idle на to_inbound, затем на scanning"
+        "name": "Передача сканирования UAV агенту",
+        "expected": "Планировщик отправляет команду scan агенту БВС и извлекает запрос из очереди"
     },
     6: {
         "name": "Запуск ребалансировки",
@@ -56,6 +56,34 @@ SCENARIO_META = {
     10: {
         "name": "Редактирование карты (добавление/удаление стеллажа)",
         "expected": "Пользовательский стеллаж добавляется в CUSTOM_SHELF_CELLS и удаляется оттуда"
+    },
+    11: {
+        "name": "Разряд батареи за задачу",
+        "expected": "После выполнения задачи putaway батарея робота уменьшается на 5% (BATTERY_TASK_DRAIN)"
+    },
+    12: {
+        "name": "Метрики Prometheus",
+        "expected": "render_prometheus() возвращает текст с battery gauge и cell visits counter"
+    },
+    13: {
+        "name": "Обнаружение застревания РТС",
+        "expected": "РТС, стоящий >STUCK_TICKS тиков с активной задачей вне базовой станции, получает алерт об остановке"
+    },
+    14: {
+        "name": "Расширенные метрики парка",
+        "expected": "render_prometheus() содержит speed, loaded, phase, stuck, task_assigned, warehouse и info метрики"
+    },
+    15: {
+        "name": "Учёт назначенных задач",
+        "expected": "После assign_tasks() счётчик magsim_robot_tasks_assigned_total для putaway увеличивается"
+    },
+    16: {
+        "name": "Метрики здоровья стека",
+        "expected": "render_prometheus() содержит magsim_health_* метрики подключения агентов и тиков симуляции"
+    },
+    17: {
+        "name": "Метрики результатов тестов",
+        "expected": "record_test_results() выставляет magsim_tests_last_result / magsim_tests_runs_total"
     }
 }
 
@@ -63,9 +91,18 @@ SCENARIO_META = {
 def _reset():
     s = get_state()
     s.reset()
+    _reset_tick_reservations()
     for r in robots:
         r.reset()
+        r.battery = 100.0
+        r.battery_max = 100.0
+        r.agent_ready = True
+        r.executing = False
+        r.agent_ws = None
     uav.reset()
+    from agent_registry import agent_registry
+    agent_registry.uav_ws = None
+    agent_registry.spare_robot_ws.clear()
 
 
 def _result(scenario_id: int, passed: bool, detail: str):
@@ -111,46 +148,31 @@ def scenario_3_unlabeled_supply():
                    f"Добавлено {new_len - old_len} единиц в очередь UAV (все 5 сканируются за раз)")
 
 
-def scenario_4_robot_movement():
+def scenario_4_robot_route_planning():
     _reset()
     r = [rb for rb in robots if "metal" in rb.products]
     if not r:
         return _result(4, False, "Нет робота для metal")
     r = r[0]
-    r.phase = "to_shelf_for_put"
-    r.carry = "metal"
-    r.carry_qty = 2
-    shelf = list(all_shelves())[0]
-    r.target_shelf = shelf
-    from core.grid import shelf_access_cells
-    access = shelf_access_cells(shelf)
-    if not access:
-        return _result(4, False, "Нет доступа к полке")
-    from core.pathfinding import astar
-    r.route = astar(r.pos, access[0])
-    if not r.route:
-        return _result(4, False, "Нет пути к полке")
-    r.current_target = r.route.pop(0) if r.route else None
-    start_draw = list(r.draw_pos)
-    for _ in range(10):
-        move_robots_one_step()
-        advance_robot_phases()
-    moved = r.draw_pos != start_draw
-    return _result(4, moved,
-                   f"draw_pos: {start_draw} → {r.draw_pos}, pos: {r.pos}")
+    supply_labeled("metal", 3)
+    assign_tasks()
+    route_ok = r.task is not None and len(r.route) > 0 and r.phase == "to_pickup_zone"
+    return _result(4, route_ok,
+                   f"task={r.task}, phase={r.phase}, route_len={len(r.route)}")
 
 
-def scenario_5_uav_scan():
+def scenario_5_uav_scan_dispatch():
     _reset()
     s = get_state()
     s.uav_scan_queue.append(1)
-    uav.state = "to_inbound"
-    inbound = get_inbound_cell()
     old_q = len(s.uav_scan_queue)
-    for _ in range(40):
-        update_uav()
-    return _result(5, len(s.uav_scan_queue) < old_q or uav.state != "to_inbound",
-                   f"Состояние UAV: {uav.state}, очередь: {len(s.uav_scan_queue)}")
+    uav.state = "idle"
+    from agent_registry import agent_registry
+    agent_registry.uav_ws = object()
+    update_uav()
+    dispatched = len(s.uav_scan_queue) == 0
+    return _result(5, dispatched,
+                   f"Очередь UAV: {old_q} → {len(s.uav_scan_queue)}")
 
 
 def scenario_6_rebalance():
@@ -214,17 +236,165 @@ def scenario_10_grid_edit():
                    f"Добавлен: {added}, удалён: {removed}")
 
 
+def scenario_11_battery_drain():
+    _reset()
+    from simulation.robot_controller import _drain_battery
+    from config.constants import BATTERY_TASK_DRAIN
+    s = get_state()
+    r = [rb for rb in robots if "metal" in rb.products]
+    if not r:
+        return _result(11, False, "Нет робота для metal")
+    r = r[0]
+    s.stock_total["metal"] += 3
+    for _ in range(3):
+        supply_labeled("metal", 1)
+    before = r.battery
+    _drain_battery(r, "putaway")
+    drained = round(before - r.battery, 2) == round(BATTERY_TASK_DRAIN, 2)
+    return _result(11, drained,
+                   f"Батарея: {before:.1f}% → {r.battery:.1f}% (шаг {BATTERY_TASK_DRAIN}%)")
+
+
+def scenario_12_metrics():
+    _reset()
+    from metrics import render_prometheus, record_cell_visit
+    record_cell_visit(1, (3, 4))
+    body, content_type = render_prometheus()
+    has_battery = "magsim_robot_battery_percent" in body
+    has_visits = "magsim_robot_cell_visits_total" in body
+    has_tasks = "magsim_robot_tasks_completed_total" in body
+    ok = has_battery and has_visits and has_tasks and "text/plain" in content_type
+    return _result(12, ok,
+                   f"battery={has_battery}, visits={has_visits}, tasks={has_tasks}, ct=[{content_type}]")
+
+
+def scenario_13_stuck_detection():
+    _reset()
+    import simulation.robot_controller as rc
+    orig = rc.STUCK_TICKS
+    rc.STUCK_TICKS = 5
+    try:
+        s = get_state()
+        r = [rb for rb in robots if "metal" in rb.products]
+        if not r:
+            return _result(13, False, "Нет робота для metal")
+        r = r[0]
+        r.pos = (6, 4)
+        r.draw_pos = [6.0, 4.0]
+        r._stuck_sample_pos = [6.0, 4.0]
+        r.task = {"type": "putaway", "product": "metal", "qty": 1}
+        r.executing = True
+        for _ in range(6):
+            rc.detect_stuck_robots()
+        alerted = r.stuck_alert_raised
+        logged = any("застрял" in e for e in s.event_log)
+        # Make sure it does NOT alert when standing at home without a task
+        r2 = [rb for rb in robots if "metal" in rb.products][0]
+        r2.pos = r2.home
+        r2.draw_pos = [float(r2.home[0]), float(r2.home[1])]
+        r2._stuck_sample_pos = list(r2.draw_pos)
+        r2.task = None
+        r2.executing = False
+        rc.detect_stuck_robots()
+        home_safe = not r2.stuck_alert_raised
+        return _result(13, alerted and logged and home_safe,
+                       f"alerted={alerted}, event_logged={logged}, home_safe={home_safe}")
+    finally:
+        rc.STUCK_TICKS = orig
+
+
+def scenario_14_extended_metrics():
+    _reset()
+    from metrics import render_prometheus
+    body, _ = render_prometheus()
+    checks = {
+        "speed": "magsim_robot_speed" in body,
+        "loaded": "magsim_robot_loaded" in body,
+        "phase": "magsim_robot_phase" in body,
+        "stuck": "magsim_robot_stuck" in body,
+        "task_assigned": "magsim_robot_tasks_assigned_total" in body,
+        "distance": "magsim_robot_distance_moved_total" in body,
+        "info": "magsim_robot_info" in body,
+        "warehouse": "magsim_warehouse_task_queue" in body,
+        "rebalance": "magsim_warehouse_rebalance_active" in body,
+    }
+    ok = all(checks.values())
+    return _result(14, ok, ", ".join(f"{k}={v}" for k, v in checks.items()))
+
+
+def scenario_15_task_assigned_counter():
+    _reset()
+    from metrics import task_assigned_counter
+    r = [rb for rb in robots if "metal" in rb.products]
+    if not r:
+        return _result(15, False, "Нет робота для metal")
+    r = r[0]
+    label = dict(robot_id=str(r.id), task_type="putaway")
+    before = task_assigned_counter.labels(**label)._value.get()
+    supply_labeled("metal", 1)
+    assign_tasks()
+    after = task_assigned_counter.labels(**label)._value.get()
+    return _result(15, after - before >= 1,
+                   f"tasks_assigned metal: {before} → {after}")
+
+
+def scenario_16_health_metrics():
+    _reset()
+    from metrics import render_prometheus, record_sim_tick
+    record_sim_tick(99.0)
+    body, _ = render_prometheus()
+    checks = {
+        "db": "magsim_health_database_connected" in body,
+        "agents": "magsim_health_agents_connected" in body,
+        "ready": "magsim_health_robots_ready" in body,
+        "ticks": "magsim_health_sim_ticks_total" in body,
+        "last_tick": "magsim_health_last_tick_timestamp" in body,
+        "uptime": "magsim_health_uptime_seconds" in body,
+    }
+    ok = all(checks.values())
+    return _result(16, ok, ", ".join(f"{k}={v}" for k, v in checks.items()))
+
+
+def scenario_17_test_result_metrics():
+    _reset()
+    from metrics import (
+        record_test_results, tests_last_result,
+        tests_runs_total, tests_last_run_timestamp,
+    )
+    before = tests_runs_total.labels(suite="unit")._value.get() or 0
+    record_test_results({
+        "tests": {
+            "total": 1, "passed": 1, "failed": 0,
+            "tests": [{"name": "s17_dummy", "passed": True}],
+        },
+        "scenarios": [],
+    })
+    incremented = tests_runs_total.labels(suite="unit")._value.get() > before
+    pass_marked = tests_last_result.labels(suite="unit", name="s17_dummy")._value.get() == 1.0
+    stamped = tests_last_run_timestamp.labels(suite="unit")._value.get() > 0
+    ok = incremented and pass_marked and stamped
+    return _result(17, ok,
+                   f"runs_incremented={incremented}, pass_marked={pass_marked}, stamped={stamped}")
+
+
 SCENARIOS = [
     scenario_1_basic_putaway,
     scenario_2_basic_retrieve,
     scenario_3_unlabeled_supply,
-    scenario_4_robot_movement,
-    scenario_5_uav_scan,
+    scenario_4_robot_route_planning,
+    scenario_5_uav_scan_dispatch,
     scenario_6_rebalance,
     scenario_7_shelf_overflow,
     scenario_8_multirobot_carry,
     scenario_9_new_product,
     scenario_10_grid_edit,
+    scenario_11_battery_drain,
+    scenario_12_metrics,
+    scenario_13_stuck_detection,
+    scenario_14_extended_metrics,
+    scenario_15_task_assigned_counter,
+    scenario_16_health_metrics,
+    scenario_17_test_result_metrics,
 ]
 
 
