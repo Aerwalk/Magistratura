@@ -132,3 +132,21 @@ def create_robot(product: str) -> Optional[Robot]:
     state = get_state()
     state.event_log.appendleft(f"{robot.name} создан для продукта {product}, станция {home}")
     return robot
+
+
+def ensure_robot_for_product(product: str) -> Optional[Robot]:
+    """Assign a product to the least-loaded robot so the fleet can serve it."""
+    if any(product in r.products for r in robots):
+        return None
+    if not robots:
+        return None
+    target = min(robots, key=lambda r: (len(r.products), r.id))
+    target.products.add(product)
+    if target.product is None:
+        target.product = product
+    from core.state import get_state
+    state = get_state()
+    state.event_log.appendleft(
+        f"{target.name} назначен для перевозки нового материала {product}"
+    )
+    return target

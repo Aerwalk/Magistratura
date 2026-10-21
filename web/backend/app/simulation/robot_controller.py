@@ -119,8 +119,12 @@ def _route_to_shelf(robot, shelf, blocked):
 def _route_to_pickup_zone(robot, blocked):
     """Route to the inbound pick cell. If that cell is occupied by (or targeted
     by) another robot, route to the nearest free neighbouring wait cell instead
-    so two robots never meet inside the pick zone."""
+    so two robots never meet inside the pick zone. An empty route [pos==target]
+    is treated as already-arrived so a robot standing on the pick cell can take
+    the task immediately instead of spamming 'no path' every tick."""
     pickup = get_inbound_pick_cell()
+    if tuple(robot.pos) == pickup:
+        return [pickup]
     if pickup not in blocked:
         return astar(robot.pos, pickup, blocked=blocked)
     wait_cells = []
@@ -136,11 +140,59 @@ def _route_to_pickup_zone(robot, blocked):
     return best
 
 
+def release_robot_shelf_reservations(robot) -> None:
+    """Drop the warehouse-shelf reservations a robot no longer needs because its
+    task/route was cancelled (reset, removal, forced stop). Without this the
+    shelf is permanently locked out of pick/put even though it may be free."""
+    state = get_state()
+    if robot.target_shelf is not None:
+        state.reserved_put_shelves.discard(robot.target_shelf)
+        state.reserved_pick_shelves.discard(robot.target_shelf)
+    task = robot.task
+    if task and task["type"] == "retrieve":
+        shelf = task.get("shelf")
+        if shelf is not None:
+            state.reserved_pick_shelves.discard(shelf)
+            state.reserved_put_shelves.discard(shelf)
+
+
+def reconcile_shelf_reservations() -> None:
+    """Self-heal stale shelf reservations. A reservation must be pinned to a robot
+    that is actively driving toward it (pick or put). If the robot that owned it
+    has since cleared its task/route, the reservation would otherwise lock the
+    shelf out of pick/put forever - which surfaces as 'material visible on the
+    shelf, but _choose_best_pick_shelf() finds nothing'."""
+    state = get_state()
+    legit_pick_shelves = set()
+    legit_put_shelves = set()
+    for r in robots:
+        if r.target_shelf is not None:
+            if r.phase == "to_shelf_for_pick":
+                legit_pick_shelves.add(r.target_shelf)
+            elif r.phase == "to_shelf_for_put":
+                legit_put_shelves.add(r.target_shelf)
+        task = r.task
+        if task and task["type"] == "retrieve":
+            shelf = task.get("shelf")
+            if shelf is not None:
+                legit_pick_shelves.add(shelf)
+    stale_pick = state.reserved_pick_shelves - legit_pick_shelves
+    stale_put = state.reserved_put_shelves - legit_put_shelves
+    for shelf in stale_pick:
+        state.reserved_pick_shelves.discard(shelf)
+        state.event_log.appendleft(f"ℹ Снята устаревшая резервация полки {shelf} (забор)")
+    for shelf in stale_put:
+        state.reserved_put_shelves.discard(shelf)
+        state.event_log.appendleft(f"ℹ Снята устаревшая резервация полки {shelf} (укладка)")
+
+
 def _choose_best_put_shelf(product: str):
     state = get_state()
     candidates = []
     for shelf, info in state.shelf_state.items():
         if shelf in state.reserved_put_shelves:
+            continue
+        if not shelf_access_cells(shelf):
             continue
         cap = get_shelf_max_capacity(shelf)
         allowed = get_shelf_allowed_products(shelf)
@@ -171,7 +223,6 @@ def _start_putaway_leg(r, task) -> bool:
         return False
     accesses = shelf_access_cells(shelf)
     if not accesses:
-        state.reserved_put_shelves.add(shelf)
         r.stuck_ticks += 1
         if r.stuck_ticks == 1:
             state.event_log.appendleft(f"⚠ {r.name}: полка {shelf} недоступна для прохода, пропущена")
@@ -266,11 +317,12 @@ def _handle_putaway_phase(r, task):
         r.task = None
         r.stuck_ticks = 0
         _drain_battery(r, "putaway")
-        if state.robot_task_queues[r.product] and state.robot_task_queues[r.product][0]["type"] == "putaway":
+        product = task["product"]
+        if state.robot_task_queues[product] and state.robot_task_queues[product][0]["type"] == "putaway":
             blocked = _get_blocked_cells(exclude_robot=r)
             route = _route_to_pickup_zone(r, blocked)
             if route:
-                r.task = state.robot_task_queues[r.product].popleft()
+                r.task = state.robot_task_queues[product].popleft()
                 r.phase = "to_pickup_zone"
                 r.route = route
                 record_task_assigned(r.id, "putaway")
@@ -351,11 +403,12 @@ def _handle_retrieve_phase(r, task):
         r.task = None
         r.target_shelf = None
         r.final_route_after_exit = []
-        if state.robot_task_queues[r.product]:
+        product = task["product"]
+        if state.robot_task_queues[product]:
             blocked = _get_blocked_cells(exclude_robot=r)
             shelf = None
             for s, info in state.shelf_state.items():
-                if s not in state.reserved_pick_shelves and info["product"] == r.product and info["count"] > 0:
+                if s not in state.reserved_pick_shelves and info["product"] == product and info["count"] > 0:
                     shelf = s
                     break
             if shelf:
@@ -364,13 +417,13 @@ def _handle_retrieve_phase(r, task):
                     state.reserved_pick_shelves.add(shelf)
                     route = _route_to_shelf(r, shelf, blocked)
                     if route:
-                        q = state.robot_task_queues[r.product]
+                        q = state.robot_task_queues[product]
                         qty2 = 1
                         q.popleft()
-                        while qty2 < r.capacity and len(q) > 0 and q[0]["type"] == "retrieve" and q[0]["product"] == r.product:
+                        while qty2 < r.capacity and len(q) > 0 and q[0]["type"] == "retrieve" and q[0]["product"] == product:
                             q.popleft()
                             qty2 += 1
-                        r.task = {"type": "retrieve", "product": r.product, "qty": qty2, "shelf": shelf}
+                        r.task = {"type": "retrieve", "product": product, "qty": qty2, "shelf": shelf}
                         r.phase = "to_shelf_for_pick"
                         r.route = route
                         record_task_assigned(r.id, "retrieve")
@@ -411,7 +464,7 @@ def _handle_rebalance_phase(r, task):
             r.phase = "idle"
             return
         info = state.shelf_state[shelf]
-        if r.carry is None and info["count"] > 0 and info["product"] == r.product:
+        if r.carry is None and info["count"] > 0 and info["product"] in r.products:
             r.carry = info["product"]
             r.pickup_anim_ticks = 15
             info["count"] -= 1
@@ -466,6 +519,8 @@ def _choose_best_pick_shelf(product: str) -> tuple:
     for shelf, info in state.shelf_state.items():
         if shelf in state.reserved_pick_shelves:
             continue
+        if not shelf_access_cells(shelf):
+            continue
         if info["product"] == product and info["count"] > 0:
             candidates.append(shelf)
     if not candidates:
@@ -473,8 +528,49 @@ def _choose_best_pick_shelf(product: str) -> tuple:
     return min(candidates, key=shelf_distance_score)
 
 
+def _abort_task_for_charge(robot) -> None:
+    """Critical-battery abort: release the current task/cargo and send the robot
+    home to charge. Mirrors reset_robot so nothing is lost from stock or queues,
+    but the robot returns to the charging station instead of staying idle."""
+    state = get_state()
+    carry = robot.carry
+    task = robot.task
+    release_robot_shelf_reservations(robot)
+    if carry:
+        state.stock_total[carry] += 1
+        state.robot_task_queues[carry].appendleft({"type": "putaway", "product": carry})
+        state.event_log.appendleft(f"РТС-{robot.id}: критический заряд, груз {carry} возвращён на станцию забора")
+    if task and task.get("type") in ("putaway", "retrieve"):
+        state.robot_task_queues[task["product"]].appendleft(task)
+    robot.task = None
+    robot.carry = None
+    robot.target_shelf = None
+    robot.route = []
+    robot.current_target = None
+    robot.phase = "to_home_charge"
+    robot.executing = False
+    robot.wait_ticks = 0
+    robot.delivery_anim_ticks = 0
+    robot.pickup_anim_ticks = 0
+    robot.carry_appear_scale = 1.0
+    robot.stuck_ticks = 0
+    robot.stationary_ticks = 0
+    robot.stuck_alert_raised = False
+    robot.stuck_since = None
+    if robot.pos != robot.home:
+        blocked = _get_blocked_cells(exclude_robot=robot)
+        route = astar(robot.pos, robot.home, blocked=blocked)
+        if route:
+            robot.route = route
+            _reserve_route(route)
+    state.event_log.appendleft(
+        f"РТС-{robot.id}: критический заряд ({robot.battery:.0f}%) — возврат на станцию, задача отменена"
+    )
+
+
 def advance_robot_phases() -> None:
     detect_stuck_robots()
+    reconcile_shelf_reservations()
     for r in robots:
         if r.delivery_anim_ticks > 0:
             r.delivery_anim_ticks -= 1
@@ -506,6 +602,9 @@ def advance_robot_phases() -> None:
                     r.route = route
                     r.phase = "to_home_charge"
                     _reserve_route(route)
+            continue
+        if r.battery < BATTERY_LOW:
+            _abort_task_for_charge(r)
             continue
         task = r.task
         if task["type"] == "putaway":

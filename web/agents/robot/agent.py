@@ -52,6 +52,9 @@ class RobotAgent:
         self.charge_end_pending = None
         self._progress_pending = False
         self._last_progress_battery = 0
+        self._last_route_len = None
+        self._last_charging = None
+        self._last_ready_at = None
 
     def handle(self, msg):
         cmd = msg.get("cmd")
@@ -67,14 +70,18 @@ class RobotAgent:
             self.charging_ticks = 0
             self.battery_at_charge_start = 0.0
             self.charging_start_ts = None
-            self.battery = 100.0
-            self.battery_max = 100.0
+            self.battery = float(msg.get("battery", 100.0))
+            self.battery_max = float(msg.get("battery_max", 100.0))
             self.ready_pending = True
+            print(f"[robot-agent] info: assigned robot_id={self.robot_id} home={self.home} "
+                  f"speed={self.speed} battery={self.battery:.1f} battery_max={self.battery_max:.1f}")
         elif cmd == "route":
             self.route = [[float(x), float(y)] for x, y in msg["route"]]
             self.charging = False
             self.charging_start_ts = None
             self.wait_ticks = 0
+            self._last_route_len = len(self.route)
+            print(f"[robot-agent] info: route_len={len(self.route)}")
         elif cmd == "start_charging":
             self.charging = True
             self.charging_ticks = 0
@@ -83,6 +90,7 @@ class RobotAgent:
             self.route = []
             self._last_progress_battery = int(self.battery)
             self._progress_pending = False
+            print(f"[robot-agent] info: charging_start battery={round(self.battery, 1)}")
         elif cmd == "replace_battery":
             self.battery = 100.0
             self.battery_max = 100.0
@@ -91,6 +99,7 @@ class RobotAgent:
             self.charging_start_ts = None
             self._last_progress_battery = 0
             self._progress_pending = False
+            print("[robot-agent] info: battery replaced")
         elif cmd == "reset":
             if "home" in msg:
                 self.home = [float(x) for x in msg["home"]]
@@ -103,6 +112,7 @@ class RobotAgent:
             self.charging_start_ts = None
             self._last_progress_battery = 0
             self._progress_pending = False
+            print("[robot-agent] info: reset")
         elif cmd == "stop":
             self.route = []
             self.wait_ticks = 0
@@ -111,6 +121,7 @@ class RobotAgent:
             self.charging_start_ts = None
             self._last_progress_battery = 0
             self._progress_pending = False
+            print("[robot-agent] info: stop")
         elif cmd == "set_home":
             self.home = [float(x) for x in msg["home"]]
         elif cmd == "set_speed":
@@ -180,10 +191,12 @@ class RobotAgent:
         if self.ready_pending:
             self.ready_pending = False
             out.append({"type": "ready", "robot_id": self.robot_id})
+            print(f"[robot-agent] info: ready robot_id={self.robot_id}")
         if self.arrived_pending:
             self.arrived_pending = False
             out.append({"type": "arrived", "robot_id": self.robot_id,
                         "pos": [round(x, 3) for x in self.pos]})
+            print(f"[robot-agent] info: arrived pos={[round(x, 3) for x in self.pos]}")
         if self._progress_pending:
             self._progress_pending = False
             span = max(1e-9, self.battery_max - self.battery_at_charge_start)
@@ -196,12 +209,24 @@ class RobotAgent:
                             "elapsed_sec": round(self.charging_ticks * TICK, 1),
                         }})
         if self.charge_end_pending:
+            pending = dict(self.charge_end_pending)
             out.append({"type": "charge_end", "robot_id": self.robot_id,
                         "payload": self.charge_end_pending})
             self.charge_end_pending = None
+            print(f"[robot-agent] info: charging complete "
+                  f"battery_from={pending['battery_from']} "
+                  f"battery_to={pending['battery_to']} "
+                  f"battery_max_after={pending['battery_max_after']}")
         if self.robot_id is not None:
             out.append(self.telemetry())
         return out
+
+    def log_heartbeat(self):
+        state = "charging" if self.charging else ("moving" if self.route else "idle")
+        print(f"[robot-agent] info: heartbeat robot_id={self.robot_id} state={state} "
+              f"battery={round(self.battery, 1)} "
+              f"pos={[round(x, 1) for x in self.pos]} "
+              f"route_left={len(self.route)}")
 
 
 async def run():
@@ -216,9 +241,14 @@ async def run():
         try:
             async with websockets.connect(PLANNER_WS, ping_interval=20, ping_timeout=20) as ws:
                 reader_task = asyncio.create_task(reader(ws))
+                heartbeat_ticks = 0
                 while True:
                     if reader_task.done() and reader_task.exception() is not None:
                         raise reader_task.exception()
+                    heartbeat_ticks += 1
+                    if heartbeat_ticks >= 600 and agent.robot_id is not None:
+                        heartbeat_ticks = 0
+                        agent.log_heartbeat()
                     while not incoming.empty():
                         m = incoming.get_nowait()
                         cmd = m.get("cmd")
@@ -242,7 +272,7 @@ async def run():
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"[robot-agent] connection error: {exc}")
+            print(f"[robot-agent] error: connection error: {exc}")
             await asyncio.sleep(2.0)
 
 

@@ -51,6 +51,7 @@ class UAVAgent:
             self.target = (float(inbound[0]), float(inbound[1]), UAV_SCAN_ALTITUDE)
             if self.state == "idle":
                 self.state = "to_inbound"
+                print(f"[uav-agent] info: scan started qty={self.scan_qty} inbound={inbound}")
 
     def step(self):
         if self.state == "to_inbound":
@@ -61,6 +62,7 @@ class UAVAgent:
             if _close3(self.pos, self.target):
                 self.state = "scanning"
                 self.scan_ticks = SCAN_DURATION_TICKS
+                print("[uav-agent] info: scanning")
         elif self.state == "scanning":
             self.scan_ticks -= 1
             if self.scan_ticks <= 0:
@@ -69,6 +71,8 @@ class UAVAgent:
                     "qty": self.scan_qty,
                     "product": random.choice(PRODUCTS),
                 }
+                print(f"[uav-agent] info: scan done qty={self.scan_qty} "
+                      f"product={self.pending_scan_done['product']}")
                 self.scan_qty = 0
                 self.target = None
                 self.state = "to_home"
@@ -77,6 +81,7 @@ class UAVAgent:
             if _close3(self.pos, UAV_HOME_POS):
                 self.pos = list(UAV_HOME_POS)
                 self.state = "idle"
+                print("[uav-agent] info: back home, idle")
 
     def pending_messages(self):
         out = []
@@ -91,6 +96,10 @@ class UAVAgent:
         })
         return out
 
+    def log_heartbeat(self):
+        print(f"[uav-agent] info: heartbeat state={self.state} "
+              f"pos={[round(x, 1) for x in self.pos]} scan_ticks={self.scan_ticks}")
+
 
 async def run():
     while True:
@@ -104,9 +113,14 @@ async def run():
         try:
             async with websockets.connect(PLANNER_WS, ping_interval=20, ping_timeout=20) as ws:
                 reader_task = asyncio.create_task(reader(ws))
+                heartbeat_ticks = 0
                 while True:
                     if reader_task.done() and reader_task.exception() is not None:
                         raise reader_task.exception()
+                    heartbeat_ticks += 1
+                    if heartbeat_ticks >= 600:
+                        heartbeat_ticks = 0
+                        agent.log_heartbeat()
                     while not incoming.empty():
                         m = incoming.get_nowait()
                         cmd = m.get("cmd")
@@ -129,7 +143,7 @@ async def run():
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"[uav-agent] connection error: {exc}")
+            print(f"[uav-agent] error: connection error: {exc}")
             await asyncio.sleep(2.0)
 
 

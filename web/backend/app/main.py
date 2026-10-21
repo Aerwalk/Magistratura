@@ -24,7 +24,7 @@ from core.grid import (
 from core.pathfinding import astar
 from entities.robot import robots, create_robot, Robot as RobotClass
 from entities.uav import uav
-from simulation.robot_controller import advance_robot_phases, _get_blocked_cells, _reset_tick_reservations
+from simulation.robot_controller import advance_robot_phases, _get_blocked_cells, _reset_tick_reservations, release_robot_shelf_reservations
 from simulation.task_manager import supply_labeled, supply_unlabeled, request_product, assign_tasks
 from simulation.uav_controller import update_uav
 from simulation.rebalancer import rebalance_warehouse, check_rebalance_complete
@@ -227,7 +227,8 @@ def _apply_uav_scan(qty: int, product: str) -> None:
     )
     has_robot = any(product in r.products for r in robots)
     if not has_robot:
-        state.event_log.appendleft(f"⚠ ВНИМАНИЕ: нет РТС, способного возить {product}!")
+        from entities.robot import ensure_robot_for_product
+        ensure_robot_for_product(product)
     for _ in range(qty):
         state.stock_total[product] += 1
         state.robot_task_queues[product].append(
@@ -350,6 +351,8 @@ async def _assign_pending_robots() -> None:
                 "robot_id": r.id,
                 "home": list(r.home),
                 "speed": r.speed,
+                "battery": round(r.battery, 1),
+                "battery_max": round(r.battery_max, 1),
             })
         if not ok:
             r.agent_ws = None
@@ -453,6 +456,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             "robot_id": robot.id,
                             "home": list(robot.home),
                             "speed": robot.speed,
+                            "battery": round(robot.battery, 1),
+                            "battery_max": round(robot.battery_max, 1),
                         })
                 elif msg_type == "remove_robot":
                     rid = msg_data["robot_id"]
@@ -463,6 +468,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         get_state().event_log.appendleft("⚠ Нельзя удалить последнего РТС!")
                     else:
                         # Return cargo/task to queues (sync mutations first)
+                        release_robot_shelf_reservations(target)
                         if target.carry:
                             state.stock_total[target.carry] += 1
                             state.robot_task_queues[target.carry].append(
@@ -495,6 +501,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         if r.id == rid:
                             carry = r.carry
                             task = r.task
+                            release_robot_shelf_reservations(r)
                             # Return cargo to stock + create putaway task
                             if carry:
                                 state.stock_total[carry] += 1
@@ -568,12 +575,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                 r.products.add(product)
                             else:
                                 r.products.discard(product)
-                            # sync primary product (None if empty)
+                            # sync primary product (None if empty); keep current primary
                             if r.products:
-                                first = next(iter(r.products))
-                                r.product = first
-                                if first in PRODUCT_COLORS:
-                                    r.color = PRODUCT_COLORS[first]
+                                if r.product not in r.products:
+                                    r.product = min(r.products)
+                                if r.product in PRODUCT_COLORS:
+                                    r.color = PRODUCT_COLORS[r.product]
                             else:
                                 r.product = None
                             break
@@ -1053,6 +1060,9 @@ async def debug_state():
             "target_shelf": r.target_shelf,
         })
     state = get_state()
+    from core.grid import shelf_access_cells, get_inbound_pick_cell
+    from simulation.robot_controller import _get_blocked_cells
+    dead_shelves = [list(sh) for sh in state.shelf_state if not shelf_access_cells(sh)]
     return {
         "robots": robots_detail,
         "spare_ws": len(agent_registry.spare_robot_ws),
@@ -1060,6 +1070,11 @@ async def debug_state():
         "queues": {p: len(q) for p, q in state.robot_task_queues.items()},
         "uav_scan_queue": list(state.uav_scan_queue),
         "event_log": list(state.event_log)[:20],
+        "dead_shelves": dead_shelves,
+        "reserved_pick_shelves": [list(sh) for sh in state.reserved_pick_shelves],
+        "reserved_put_shelves": [list(sh) for sh in state.reserved_put_shelves],
+        "shelf_state_count": len(state.shelf_state),
+        "pickup_cell": list(get_inbound_pick_cell()),
     }
 
 

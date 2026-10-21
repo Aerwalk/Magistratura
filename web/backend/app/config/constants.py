@@ -19,6 +19,8 @@ def add_product(name: str, color: tuple):
     state = get_state()
     state.robot_task_queues[name] = deque()
     state.event_log.appendleft(f"Добавлен новый материал: {name}")
+    from entities.robot import ensure_robot_for_product
+    ensure_robot_for_product(name)
 
 PRODUCT_COLORS = {
     "metal": (0.78, 0.78, 0.82, 1.0),

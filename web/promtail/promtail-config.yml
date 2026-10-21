@@ -24,12 +24,17 @@ scrape_configs:
         target_label: 'stream'
       - source_labels: ['__meta_docker_network_ip']
         target_label: 'container_ip'
-      - source_labels: ['__meta_docker_label_com_docker_compose_service']
+      - source_labels: ['container']
+        target_label: 'service_name'
+      - action: replace
+        source_labels: ['container']
+        regex: '^(?:web-)?robot-agent-\d+$'
+        replacement: 'magsim-robot-agent'
+        target_label: 'service_name'
+      - action: replace
+        source_labels: ['container']
+        regex: '^magsim-uav-agent$'
+        replacement: 'magsim-uav-agent'
         target_label: 'service_name'
       - source_labels: ['__meta_docker_label_com_docker_compose_project']
         target_label: 'compose_project'
-      - action: replace
-        source_labels: ['container']
-        regex: 'magsim-robot-agent-\d+'
-        replacement: 'magsim-robot-agent'
-        target_label: 'container'

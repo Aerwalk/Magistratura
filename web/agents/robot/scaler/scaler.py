@@ -12,8 +12,8 @@ SERVICE = os.getenv("SERVICE", "robot-agent")
 MIN_REPLICAS = int(os.getenv("MIN_REPLICAS", "5"))
 
 
-def log(msg):
-    print(f"[robot-scaler] {msg}", flush=True)
+def log(msg, level="info"):
+    print(f"[robot-scaler] {level}: {msg}", flush=True)
 
 
 def fetch_debug():
@@ -73,7 +73,7 @@ def scale_to(n, project):
         timeout=180,
     )
     if res.returncode != 0:
-        log(f"scale failed: {(res.stderr or res.stdout).strip()}")
+        log(f"scale failed: {(res.stderr or res.stdout).strip()}", "warn")
         return False
     log("scale ok")
     return True
@@ -89,15 +89,15 @@ def main():
             n_robots = max(MIN_REPLICAS, len(robots))
             running = running_replicas()
             if running < n_robots:
-                log(f"robots={len(robots)} running={running} -> need scale up")
+                log(f"robots={len(robots)} running={running} -> need scale up", "warn")
                 scale_to(n_robots, project_name())
             else:
                 report = (len(robots), running)
                 if report != last_report:
-                    log(f"ok: robots={len(robots)} running={running}")
+                    log(f"robots={len(robots)} running={running}")
                     last_report = report
         except Exception as e:
-            log(f"error: {e}")
+            log(f"{e}", "error")
         time.sleep(POLL_INTERVAL)
 
 

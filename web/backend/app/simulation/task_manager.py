@@ -18,6 +18,8 @@ def _warn_no_robot(product: str):
     if not _has_robot_for(product):
         state = get_state()
         state.event_log.appendleft(f"⚠ ВНИМАНИЕ: нет РТС, способного возить {product}!")
+        from entities.robot import ensure_robot_for_product
+        ensure_robot_for_product(product)
 
 
 def _warn_full_shelves(product: str):
@@ -85,6 +87,8 @@ def _choose_best_put_shelf(product: str) -> tuple:
     for shelf, info in state.shelf_state.items():
         if shelf in state.reserved_put_shelves:
             continue
+        if not shelf_access_cells(shelf):
+            continue
         cap = get_shelf_max_capacity(shelf)
         allowed = get_shelf_allowed_products(shelf)
         if allowed is not None and product not in allowed:
@@ -108,6 +112,8 @@ def _choose_best_pick_shelf(product: str) -> tuple:
     for shelf, info in state.shelf_state.items():
         if shelf in state.reserved_pick_shelves:
             continue
+        if not shelf_access_cells(shelf):
+            continue
         if info["product"] == product and info["count"] > 0:
             candidates.append(shelf)
     if not candidates:
@@ -128,7 +134,7 @@ def assign_tasks() -> None:
             continue
         if robot.battery < BATTERY_LOW:
             continue
-        queue = _pick_robot_queue(robot, state)
+        queue_product, queue = _pick_robot_queue(robot, state)
         if queue is None:
             if robot.pos != robot.home:
                 blocked = _get_blocked_cells(exclude_robot=robot)
@@ -157,7 +163,7 @@ def assign_tasks() -> None:
                 robot.route = route
                 robot.target_shelf = from_shelf
                 with obs.span("task.assigned", robot_id=robot.id, type="rebalance",
-                              product=task["product"], from_shelf=str(from_shelf)):
+                              product=queue_product, from_shelf=str(from_shelf)):
                     record_task_assigned(robot.id, "rebalance")
                 _reserve_route(route)
             else:
@@ -179,8 +185,8 @@ def assign_tasks() -> None:
                 queue.popleft()
                 qty += 1
             with obs.span("task.assigned", robot_id=robot.id, type="putaway",
-                          product=robot.product, qty=qty, source="queue"):
-                robot.task = {"type": "putaway", "product": robot.product, "qty": qty}
+                          product=queue_product, qty=qty, source="queue"):
+                robot.task = {"type": "putaway", "product": queue_product, "qty": qty}
                 robot.phase = "to_pickup_zone"
                 robot.route = route
                 record_task_assigned(robot.id, "putaway")
@@ -188,10 +194,10 @@ def assign_tasks() -> None:
                 robot.target_shelf = None
             _reserve_route(route)
         elif task["type"] == "retrieve":
-            shelf = _choose_best_pick_shelf(robot.product)
+            shelf = _choose_best_pick_shelf(queue_product)
             if shelf is None:
                 queue.popleft()
-                state.event_log.appendleft(f"Не найдена полка для выдачи {robot.product}")
+                state.event_log.appendleft(f"Не найдена полка для выдачи {queue_product}")
                 continue
             accesses = shelf_access_cells(shelf)
             if not accesses:
@@ -202,7 +208,7 @@ def assign_tasks() -> None:
             # Pop first task + batch additional up to robot.capacity
             queue.popleft()
             qty = 1
-            while qty < robot.capacity and len(queue) > 0 and queue[0]["type"] == "retrieve" and queue[0]["product"] == robot.product:
+            while qty < robot.capacity and len(queue) > 0 and queue[0]["type"] == "retrieve" and queue[0]["product"] == queue_product:
                 queue.popleft()
                 qty += 1
             blocked_for_route = _get_blocked_cells(exclude_robot=robot)
@@ -217,13 +223,13 @@ def assign_tasks() -> None:
                     f"⚠ {robot.name}: нет пути к полке {shelf} для забора!"
                 )
                 for _ in range(qty):
-                    state.robot_task_queues[robot.product].appendleft({"type": "retrieve", "product": robot.product})
+                    state.robot_task_queues[queue_product].appendleft({"type": "retrieve", "product": queue_product})
                 continue
-            robot.task = {"type": "retrieve", "product": robot.product, "qty": qty, "shelf": shelf}
+            robot.task = {"type": "retrieve", "product": queue_product, "qty": qty, "shelf": shelf}
             robot.phase = "to_shelf_for_pick"
             robot.route = route1
             with obs.span("task.assigned", robot_id=robot.id, type="retrieve",
-                          product=robot.product, qty=qty, shelf=str(shelf)):
+                          product=queue_product, qty=qty, shelf=str(shelf)):
                 record_task_assigned(robot.id, "retrieve")
             robot.next_route_after_phase = route2
             robot.final_route_after_exit = route3
@@ -236,5 +242,5 @@ def _pick_robot_queue(robot, state):
     for p in robot.products:
         q = state.robot_task_queues.get(p)
         if q and len(q) > 0:
-            return q
-    return None
+            return p, q
+    return None, None

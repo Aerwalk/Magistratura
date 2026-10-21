@@ -34,6 +34,39 @@ class TestTaskManager(unittest.TestCase):
         has_metal = any("metal" in r.products for r in robots)
         self.assertEqual(_has_robot_for("metal"), has_metal)
 
+    def test_new_product_assigned_to_robot(self):
+        from config import add_product
+        from entities.robot import ensure_robot_for_product
+        from entities import robots
+        from random import randint
+        name = f"mat_{randint(1000, 9999)}"
+        add_product(name, (0.5, 0.5, 0.5, 1.0))
+        self.assertTrue(_has_robot_for(name))
+        carriers = [r for r in robots if name in r.products]
+        self.assertTrue(carriers, "новый материал должен быть назначен хотя бы одному РТС")
+        ensure_robot_for_product(name)
+        self.assertEqual(len([r for r in robots if name in r.products]), len(carriers))
+
+    def test_assign_tasks_uses_queue_product(self):
+        from config import add_product
+        from entities import robots
+        from simulation.task_manager import assign_tasks
+        from random import randint
+        name = f"mat2_{randint(1000, 9999)}"
+        add_product(name, (0.5, 0.5, 0.5, 1.0))
+        carriers = [rb for rb in robots if name in rb.products]
+        if not carriers:
+            self.skipTest("новый материал не назначен РТС")
+        r = carriers[0]
+        r.agent_ready = True
+        r.carry = None
+        r.task = None
+        s = get_state()
+        s.robot_task_queues[name].append({"type": "putaway", "product": name, "source": "labeled"})
+        assign_tasks()
+        self.assertTrue(r.task, "РТС должен взять задачу")
+        self.assertEqual(r.task["product"], name)
+
 
 if __name__ == '__main__':
     unittest.main()

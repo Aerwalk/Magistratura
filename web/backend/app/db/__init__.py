@@ -1,4 +1,4 @@
-"""TimescaleDB integration: telemetry/log ingest, queries, battery forecasts,
+﻿"""TimescaleDB integration: telemetry/log ingest, queries, battery forecasts,
 plus a best-effort Loki sink for Grafana Logs Drilldown.
 
 The stores are optional: if TimescaleDB or Loki are unreachable the
@@ -64,12 +64,12 @@ async def init(forever: bool = False):
             await _apply_schema(pool)
             _pool = pool
             _enabled = True
-            print("[db] TimescaleDB connected")
+            print("[db] info: TimescaleDB connected")
             return
         except Exception as exc:
             _pool = None
             _enabled = False
-            print(f"[db] TimescaleDB unavailable: {exc}")
+            print(f"[db] error: TimescaleDB unavailable: {exc}")
             if not forever:
                 return
             await asyncio.sleep(10)
@@ -114,7 +114,7 @@ async def _apply_schema(pool):
                     """
                 )
             except Exception as exc:
-                print(f"[db] continuous aggregate skipped: {exc}")
+                print(f"[db] warn: continuous aggregate skipped: {exc}")
 
 
 async def writer_loop():
@@ -123,7 +123,7 @@ async def writer_loop():
         try:
             await flush_once()
         except Exception as exc:
-            print(f"[db] flush error: {exc}")
+            print(f"[db] error: flush error: {exc}")
 
 
 async def loki_writer_loop():
@@ -132,7 +132,7 @@ async def loki_writer_loop():
         try:
             await loki_flush_once()
         except Exception as exc:
-            print(f"[loki] flush error: {exc}")
+            print(f"[loki] error: flush error: {exc}")
 
 
 async def flush_once():
@@ -157,7 +157,7 @@ async def flush_once():
             if charges:
                 await conn.executemany(_INSERT_CHARGE, charges)
     except Exception as exc:
-        print(f"[db] flush failed, requeueing: {exc}")
+        print(f"[db] error: flush failed, requeueing: {exc}")
         for item in telemetry:
             _put(_telemetry_queue, item)
         for item in logs:
@@ -179,9 +179,9 @@ async def loki_flush_once():
                 headers={"Content-Type": "application/json"},
             )
             if resp.status_code >= 400:
-                print(f"[loki] push HTTP {resp.status_code}: {resp.text[:200]}")
+                print(f"[loki] error: push HTTP {resp.status_code}: {resp.text[:200]}")
     except Exception as exc:
-        print(f"[loki] push failed: {exc}")
+        print(f"[loki] error: push failed: {exc}")
 
 
 def _http_client():
@@ -212,7 +212,7 @@ def _ns(dt) -> str:
     return str(int(dt.timestamp() * 1_000_000_000))
 
 
-# ─── Producers (callable from sync code) ───────────────────────────────
+# в”Ђв”Ђв”Ђ Producers (callable from sync code) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 def push_telemetry(ts, robot_id, x, y, phase, battery, battery_max, charging, speed, task_type):
     if not _enabled:
@@ -234,8 +234,10 @@ def push_log(robot_id, level, event, payload=None):
     payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else None
     ts = _now()
     if payload_json and len(payload_json) <= 4000:
-        event = f"{event} {payload_json}"
-    _put(_loki_queue, (ts, robot_id, level, event))
+        loki_line = f"{event} {payload_json}"
+    else:
+        loki_line = event
+    _put(_loki_queue, (ts, robot_id, level, loki_line))
     if _enabled:
         _put(_log_queue, (ts, robot_id, level, event, payload_json))
 
@@ -248,7 +250,7 @@ def push_charge_session(robot_id, start_ts, end_ts, duration_sec,
                          battery_from, battery_to, battery_max_after))
 
 
-# ─── Queries ───────────────────────────────────────────────────────────
+# в”Ђв”Ђв”Ђ Queries в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 async def get_telemetry(robot_id, from_ts=None, to_ts=None, bucket="5 minutes", limit=2000):
     if not _enabled:
@@ -439,7 +441,7 @@ def _classify_health(battery_now, battery_max, eta_hours, cycles_to_fail):
     return "ok"
 
 
-# ─── Queue helpers ─────────────────────────────────────────────────────
+# в”Ђв”Ђв”Ђ Queue helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 def _put(q, item):
     try:

@@ -31,7 +31,7 @@ def init():
         return
     _inited = True
     if not _OTEL_OK:
-        print("[observe] opentelemetry unavailable, tracing off")
+        print("[observe] warn: opentelemetry unavailable, tracing off")
         return
     try:
         resource = Resource.create({"service.name": SERVICE})
@@ -41,10 +41,10 @@ def init():
         )
         _otrace.set_tracer_provider(provider)
         _tracer = _otrace.get_tracer("magsim-agent")
-        print(f"[observe] tracing enabled -> {TEMPO_OTLP} ({SERVICE})")
+        print(f"[observe] info: tracing enabled -> {TEMPO_OTLP} ({SERVICE})")
     except Exception as exc:
         _tracer = None
-        print(f"[observe] tracing disabled: {exc}")
+        print(f"[observe] warn: tracing disabled: {exc}")
 
 
 @contextmanager

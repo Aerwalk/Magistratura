@@ -39,7 +39,6 @@ def init_tracing(app):
         FastAPIInstrumentor.instrument_app(app)
         _tracer = trace.get_tracer("magsim")
         _enabled = True
-        print(f"[otel] tracing enabled -> {TEMPO_OTLP}")
+        print(f"[otel] info: tracing enabled -> {TEMPO_OTLP}")
     except Exception as exc:
-        _enabled = False
-        print(f"[otel] tracing disabled: {exc}")
+        print(f"[otel] warn: tracing disabled: {exc}")

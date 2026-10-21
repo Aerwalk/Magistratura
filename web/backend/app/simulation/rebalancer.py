@@ -46,7 +46,7 @@ def rebalance_warehouse(force: bool = False) -> None:
     state.event_log.appendleft(f"Начало ребалансировки: {state.rebalance_moves_remaining} перемещений")
     for move in rebalance_moves:
         robot_for_product = next(
-            (r for r in robots if r.product == move["product"]), None
+            (r for r in robots if move["product"] in r.products), None
         )
         if robot_for_product:
             state.robot_task_queues[move["product"]].append({

@@ -166,6 +166,6 @@ def init():
             "%(asctime)s %(levelname)s [%(name)s] %(message)s"
         ))
         logging.getLogger().addHandler(handler)
-        print("[obs] python logging -> Loki (WARNING+)")
+        print("[obs] info: python logging -> Loki (WARNING+)")
     except Exception as exc:
-        print(f"[obs] log handler failed: {exc}")
+        print(f"[obs] error: log handler failed: {exc}")
